@@ -206,6 +206,8 @@ graphs and report
 
 For a project this large, the easiest mistake is creating a bunch of folders without understanding why they exist. Here's what each part of the architecture actually does.
 
+```
+
 # Root Directory
 
 ```text
