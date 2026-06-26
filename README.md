@@ -9,11 +9,16 @@ Multi-agent simulation for AI medium-of-exchange preferences
 
 # Workflow after:
 **Every time you start working:**
+```text
 git pull
+```
+
 **After making changes:**
+```text
 git add .
 git commit -m "Added stablecoin utility function"
 git push
+```
 **Then create a Pull Request on GitHub and merge it once it's reviewed.**
 
 
