@@ -7,7 +7,9 @@ Multi-agent simulation for AI medium-of-exchange preferences
 **Make your own branch:** This prevents people from accidentally overwriting each other's work.
   ```text
   git checkout -b aditya
-  git branch --set-upstream-to=origin/main aditya
+  git branch --set-upstream-to=origin/aditya aditya
+  git config --global push.default current
+  
   ```
 # Workflow after:
 **Every time you start working:**
