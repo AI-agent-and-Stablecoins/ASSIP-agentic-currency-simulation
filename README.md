@@ -18,6 +18,7 @@ git push
 
 
 # File Arcitecture: 
+```text
 
 finance-agent-sandbox/
 │
