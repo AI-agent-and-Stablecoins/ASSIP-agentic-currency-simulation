@@ -2,7 +2,7 @@
 Multi-agent simulation for AI medium-of-exchange preferences
 
 # Setup
-**Clone the Repo:** git clone https://github.com/YOUR_USERNAME/future-of-finance-agents.git
+**Clone the Repo:** git clone https://github.com/adityashah522/future-of-finance-agents.git
 
 **Make your own branch:** This prevents people from accidentally overwriting each other's work.
   ```text
@@ -15,6 +15,11 @@ Multi-agent simulation for AI medium-of-exchange preferences
 **Every time you start working:**
 ```text
 git pull
+# 1. Download your team's latest work from GitHub
+git fetch origin
+
+# 2. Merge their work into your current workspace
+git merge origin/main
 ```
 
 **After making changes:**
