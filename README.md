@@ -5,9 +5,10 @@ Multi-agent simulation for AI medium-of-exchange preferences
 **Clone the Repo:** git clone https://github.com/YOUR_USERNAME/future-of-finance-agents.git
 
 **Make your own branch:** This prevents people from accidentally overwriting each other's work.
-  ex: git checkout -b aditya
-      git branch --set-upstream-to=origin/main aditya
-
+  ```text
+  git checkout -b aditya
+  git branch --set-upstream-to=origin/main aditya
+  ```
 # Workflow after:
 **Every time you start working:**
 ```text
