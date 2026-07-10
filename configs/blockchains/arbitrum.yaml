@@ -1,0 +1,4 @@
+name: arbitrum
+throughput: 200
+gas_fee: 0.15
+finality_seconds: 1

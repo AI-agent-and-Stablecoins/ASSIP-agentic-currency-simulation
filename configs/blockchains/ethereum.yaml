@@ -1,0 +1,4 @@
+name: ethereum
+throughput: 15
+gas_fee: 2.50
+finality_seconds: 12

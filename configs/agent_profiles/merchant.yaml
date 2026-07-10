@@ -1,0 +1,12 @@
+name: merchant
+agent_class: seller
+risk_tolerance: medium
+utility_type: multi_attribute
+weights:
+  governance_weight: 0.20
+  liquidity_weight: 0.35
+  gas_fee_weight: 0.25
+  volatility_weight: 0.15
+  compliance_weight: 0.05
+initial_wallet:
+  USDC: 2000.0

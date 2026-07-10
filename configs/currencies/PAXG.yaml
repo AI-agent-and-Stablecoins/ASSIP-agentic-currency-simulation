@@ -1,0 +1,10 @@
+symbol: PAXG
+asset_class: gold_backed
+peg: XAU
+governance_score: 0.85
+liquidity_score: 0.50
+peg_error: 0.0020
+issuer_risk: 0.10
+genius_compliant: true
+gold_reserve_oz: 1.0
+custodian: "Brink's vaults, audited via Paxos"

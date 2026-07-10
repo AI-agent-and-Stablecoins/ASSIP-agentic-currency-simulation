@@ -1,0 +1,9 @@
+symbol: EURT
+asset_class: stablecoin
+peg: EUR
+governance_score: 0.50
+liquidity_score: 0.45
+peg_error: 0.0012
+issuer_risk: 0.28
+genius_compliant: false
+redemption_mechanism: "1:1 EUR redemption via Tether, limited reserve transparency"

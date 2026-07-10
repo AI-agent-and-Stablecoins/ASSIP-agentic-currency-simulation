@@ -1,0 +1,35 @@
+[project]
+name = "assip-future-of-finance"
+version = "0.1.0"
+description = "Agentic simulation of AI preferences for competing digital media of exchange"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.6",
+    "sqlalchemy>=2.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "pandas>=2.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[tool.setuptools.packages.find]
+include = ["src*", "database*", "e2b*", "metrics*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

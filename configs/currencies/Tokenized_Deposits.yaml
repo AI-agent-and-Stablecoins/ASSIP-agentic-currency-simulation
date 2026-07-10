@@ -1,0 +1,10 @@
+symbol: TDUSD
+asset_class: tokenized_deposit
+peg: USD
+governance_score: 0.90
+liquidity_score: 0.35
+peg_error: 0.0001
+issuer_risk: 0.05
+genius_compliant: true
+issuing_bank: "Consortium Bank Network"
+fdic_insured: true

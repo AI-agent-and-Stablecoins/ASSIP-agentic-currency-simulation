@@ -1,0 +1,8 @@
+name: bank
+agent_class: bank
+risk_tolerance: low
+utility_type: cara
+risk_aversion: 0.8
+initial_wallet:
+  USDC: 500000.0
+  TDUSD: 250000.0

@@ -1,0 +1,4 @@
+name: base
+throughput: 100
+gas_fee: 0.05
+finality_seconds: 2

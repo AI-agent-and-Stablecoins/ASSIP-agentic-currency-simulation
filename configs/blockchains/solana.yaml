@@ -1,0 +1,4 @@
+name: solana
+throughput: 3000
+gas_fee: 0.002
+finality_seconds: 1

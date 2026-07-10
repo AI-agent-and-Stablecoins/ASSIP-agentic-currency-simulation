@@ -1,0 +1,14 @@
+name: institution
+agent_class: investor
+risk_tolerance: medium
+utility_type: multi_attribute
+weights:
+  governance_weight: 0.40
+  liquidity_weight: 0.20
+  gas_fee_weight: 0.10
+  volatility_weight: 0.20
+  compliance_weight: 0.10
+initial_wallet:
+  USDC: 50000.0
+  EURC: 20000.0
+  PAXG: 10.0

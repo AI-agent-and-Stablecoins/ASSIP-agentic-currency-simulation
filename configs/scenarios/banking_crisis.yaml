@@ -1,0 +1,15 @@
+name: banking_crisis
+initial_state:
+  inflation: 0.02
+  interest_rate: 0.05
+  gold_price: 2400.0
+  confidence_index: 1.0
+  peg_reference_rates:
+    USD: 1.0
+    EUR: 1.08
+    XAU: 2400.0
+shocks:
+  - day: 5
+    type: bank_failure
+    magnitude: 0.30
+duration_days: 30

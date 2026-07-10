@@ -1,0 +1,15 @@
+name: fee_spike
+initial_state:
+  inflation: 0.02
+  interest_rate: 0.05
+  gold_price: 2400.0
+  confidence_index: 1.0
+  peg_reference_rates:
+    USD: 1.0
+    EUR: 1.08
+    XAU: 2400.0
+shocks:
+  - day: 8
+    type: fee_spike
+    magnitude: 5.0
+duration_days: 30

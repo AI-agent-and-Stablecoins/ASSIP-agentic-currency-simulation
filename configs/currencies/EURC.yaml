@@ -1,0 +1,9 @@
+symbol: EURC
+asset_class: stablecoin
+peg: EUR
+governance_score: 0.93
+liquidity_score: 0.60
+peg_error: 0.0005
+issuer_risk: 0.08
+genius_compliant: true
+redemption_mechanism: "1:1 EUR redemption via Circle, monthly attested reserves"

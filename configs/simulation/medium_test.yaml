@@ -1,0 +1,11 @@
+agent_mix:
+  consumer: 20
+  merchant: 10
+  bank: 2
+  investor: 5
+num_days: 30
+scenario: baseline
+random_seed: 42
+max_negotiation_rounds: 10
+agreement_tolerance: 0.01
+concession_rate: 0.3

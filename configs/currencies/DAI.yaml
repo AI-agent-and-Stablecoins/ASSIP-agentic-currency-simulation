@@ -1,0 +1,9 @@
+symbol: DAI
+asset_class: stablecoin
+peg: USD
+governance_score: 0.70
+liquidity_score: 0.75
+peg_error: 0.0030
+issuer_risk: 0.20
+genius_compliant: false
+redemption_mechanism: "Overcollateralized crypto-backed via MakerDAO, no fiat redemption guarantee"

@@ -1,0 +1,9 @@
+name: investor
+agent_class: investor
+risk_tolerance: high
+utility_type: crra
+risk_aversion: 1.2
+initial_wallet:
+  USDC: 10000.0
+  PAXG: 5.0
+  XAUT: 5.0

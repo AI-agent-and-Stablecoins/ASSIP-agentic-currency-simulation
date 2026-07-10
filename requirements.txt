@@ -1,0 +1,7 @@
+# Mirrors pyproject.toml's [project.dependencies]. pyproject.toml is the source
+# of truth (`pip install -e .`); this file is kept for `pip install -r` convenience.
+pydantic>=2.6
+sqlalchemy>=2.0
+pyyaml>=6.0
+python-dotenv>=1.0
+pandas>=2.2
