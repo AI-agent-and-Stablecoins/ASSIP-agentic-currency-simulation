@@ -9,7 +9,14 @@ dependencies = [
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
     "pandas>=2.2",
+    "e2b>=2.0",
 ]
+
+[project.optional-dependencies]
+# Not required for Phase 1 core simulation -- only needed for the optional
+# integrations in metrics/wandb_logger.py and scripts/calibrate_currency_configs.py.
+observability = ["wandb>=0.17"]
+market-data = ["requests>=2.31"]
 
 [dependency-groups]
 dev = [
@@ -20,7 +27,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["src*", "database*", "e2b*", "metrics*"]
+include = ["src*", "database*", "sandbox*", "metrics*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

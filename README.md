@@ -638,6 +638,13 @@ Tracks inequality and concentration.
 
 # E2B Folder
 
+> **Implementation note:** this folder lives at `sandbox/`, not `e2b/`. The
+> `e2b` PyPI package is itself imported as `from e2b import Sandbox`, which
+> collides with a top-level folder of the same name once the repo root is on
+> `sys.path` (needed everywhere for `from src...`/`from database...`
+> imports) -- two top-level packages can't both be named `e2b`. Renaming to
+> `sandbox/` was the only clean fix once the real E2B SDK was wired in.
+
 ## `sandbox_manager.py`
 
 Creates sandboxes.
