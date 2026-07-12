@@ -2,7 +2,7 @@
 Multi-agent simulation for AI medium-of-exchange preferences
 
 # Setup
-**Clone the Repo:** git clone https://github.com/adityashah522/future-of-finance-agents.git
+**Clone the Repo:** git clone https://github.com/AI-agent-and-Stablecoins/ASSIP-agentic-currency-simulation
 
 **Make your own branch:** This prevents people from accidentally overwriting each other's work.
   ```text
