@@ -17,7 +17,18 @@ readout, not just a mocked test suite.
 The five target hypotheses (risk aversion vs. USD/EUR, liquidity vs. gas fees, governance vs.
 liquidity, macro-crisis proximity vs. gold backing, cross-border volatility vs. currency
 choice) are the yardstick for every context field and metric added below — nothing is added to
-the LLM's context that doesn't serve one of these.
+the LLM's context that doesn't serve one of these. Concretely:
+
+| Hypothesis | Independent variable | Dependent variable |
+|---|---|---|
+| 1. Risk aversion → USD over EUR | risk profile / `risk_aversion` (γ) | USD-pegged vs. EUR-pegged stablecoin selection rate |
+| 2. Liquidity vs. gas fees | bid-ask-spread proxy (`liquidity_score`) vs. `gas_fee` | currency/chain choice under a liquidity/fee trade-off |
+| 3. Governance vs. liquidity | governance-prompt condition (§12) | USDC vs. USDT selection; governance-attribute trade-off (see tiered outcomes, §12) |
+| 4. Crisis/depeg proximity → gold | agent's *perceived* proximity to banking crisis/depeg (vs. objective macro state) | PAXG/XAUT selection rate |
+| 5. Cross-border volatility → USD | cross-border flag + FX volatility | USD-pegged vs. EUR-pegged selection rate in cross-border transactions |
+
+Every new context field or metric introduced below should be traceable to one of these five
+rows; if it isn't, it doesn't belong in this phase.
 
 **Non-negotiable invariant** (unchanged from `phase_2_instructions_v2.md`):
 
@@ -121,12 +132,20 @@ a consumption stream — it needs a continuation value from future timesteps, wh
 simulation's single-period per-transaction decision doesn't have. Presenting it as literal EZ
 would misrepresent the math in any resulting paper.
 
+**Mandatory framing, verbatim, in the class docstring and any paper/report text that cites
+this function:**
+
+> This is not an Epstein-Zin utility function and should not be interpreted as one in
+> empirical results. It is an EZ-inspired static proxy designed to test whether separately
+> parameterizing risk aversion and an EIS-inspired fee-sensitivity parameter changes choice
+> behavior relative to CRRA.
+
 What it preserves from EZ: **separating risk aversion from elasticity of intertemporal
 substitution (EIS)**, which CRRA collapses into one parameter (`γ`). Formula:
 
 ```
 safety = governance_score * liquidity_score * (1 - peg_error)     # same safety multiplier
-fee_sensitivity = 1 / eis                                          # ψ = eis
+fee_sensitivity = 1 / eis                                # eis_inspired_fee_sensitivity; ψ = eis
 effective_wealth = max(wealth * safety - gas_fee * fee_sensitivity, 1e-9)
 
 U = log(effective_wealth)                        if risk_aversion == 1
@@ -134,8 +153,12 @@ U = effective_wealth ** (1 - risk_aversion) / (1 - risk_aversion)   otherwise
 ```
 
 `risk_aversion` (γ) shapes curvature over the safety-adjusted payoff — same role as in CRRA.
-`eis` (ψ) independently controls how harshly the gas-fee term is penalized: low ψ (reluctant
-to substitute) amplifies the fee penalty; high ψ dampens it. These two parameters move
+The external constructor parameter stays named `eis` (spec compatibility with
+`phase_2_instructions_v2.md`'s CRRA/CARA/EZ framing), but internally the derived quantity
+`1 / eis` is named `eis_inspired_fee_sensitivity`, not `fee_sensitivity` alone — using `ψ = EIS`
+to scale a gas-fee penalty is a **behavioral modeling choice**, not a derivation from formal EZ
+preferences over consumption, and the name must not imply otherwise. Low `eis` (reluctant to
+substitute) amplifies the fee penalty; high `eis` dampens it. These two parameters move
 different axes of the same option, which is the behaviorally meaningful part of EZ for this
 simulation.
 
@@ -178,10 +201,22 @@ routing_policies:
     pinned_models: [claude-sonnet-5, gpt-5.6-luna, deepseek-v4-pro, gemini-3.5-flash-lite, perplexity-sonar]
 ```
 
-All 5 slugs are best-effort (OpenRouter's catalog changes); centralizing them here means a
-wrong slug is a one-line config fix, not a code change. A configured model ID that OpenRouter
-rejects must fail with a clear, labeled error (which model, what OpenRouter said) — never
-silently skip.
+All 5 slugs are now **verified** against OpenRouter's own model pages (checked 2026-07-22, see
+sources below) rather than left as guesses:
+
+| Label | Verified slug | Source |
+|---|---|---|
+| claude-sonnet-5 | `anthropic/claude-sonnet-5` | openrouter.ai/anthropic/claude-sonnet-5 |
+| gpt-5.6-luna | `openai/gpt-5.6-luna` | openrouter.ai/openai/gpt-5.6-luna |
+| deepseek-v4-pro | `deepseek/deepseek-v4-pro` | openrouter.ai/deepseek/deepseek-v4-pro |
+| gemini-3.5-flash-lite | `google/gemini-3.5-flash-lite` | openrouter.ai/google/gemini-3.5-flash-lite |
+| perplexity-sonar | `perplexity/sonar` | openrouter.ai/perplexity/sonar |
+
+Because OpenRouter's catalog can still change after this document is written (models are
+deprecated/renamed), verification at design time is not a substitute for a runtime preflight —
+the implementation must still validate every configured model ID against OpenRouter at startup
+and fail with a clear, labeled error (which model, what OpenRouter said) rather than silently
+skipping it or falling through to a different model unannounced.
 
 `default_reliability_chain` is used by ordinary simulation runs: optimizes for getting *a*
 decision. `model_comparison` is used by `experiment_007`: each of the 5 models is called on its
@@ -267,6 +302,13 @@ numbers. If Polygon errors or has no data for a symbol, the context explicitly s
 "live price unavailable" (never silently substitutes zero) and the decision pipeline proceeds
 on the static profile alone — a market-data outage must never crash a negotiation.
 
+The static profile is injected into the prompt under an explicit **"Background / historical
+information — not current market state"** heading, distinct from the live price snapshot and
+the simulation's own current governance/liquidity/peg-error fields. Without this label an LLM
+could treat a mid-2026 reserve-composition snapshot or a stale news event as describing the
+simulation's present moment, which would quietly corrupt the very governance/liquidity
+comparisons hypotheses 1–3 depend on.
+
 ## 7. Structured decision & adapter
 
 `src/llm/decision_schema.py` — `Decision` (action ∈ {OFFER, COUNTER_OFFER, ACCEPT, REJECT,
@@ -316,10 +358,23 @@ configurable `hallucination_threshold`, default 0.20, never hardcoded). Correlat
 
 `LLMDecisionRecord` (new table) — for every LLM decision: `decision_id`, `simulation_id`,
 `timestep`, `agent_id`, `agent_type`, `requested_model`, `actual_model`, `fallback_used`,
-`fallback_reason`, `model_attempts` (JSON), `prompt_version`, `action`, `currency`, `chain`,
-`amount`, `price`, `reported_reasoning`, `negotiation_id`, `round`, `risk_profile`,
-`utility_type`, `utility_parameters` (JSON), `scenario`, `domestic_or_cross_border`,
-`governance_prompt_enabled`.
+`fallback_reason`, `model_attempts` (JSON), `prompt_version`, `rendered_prompt_hash`, `action`,
+`currency`, `chain`, `amount`, `price`, `reported_reasoning`, `negotiation_id`, `round`,
+`risk_profile`, `utility_type`, `utility_parameters` (JSON), `scenario`,
+`domestic_or_cross_border`, `governance_prompt_enabled`.
+
+**Prompt versioning is two fields, not one**, because "which template" and "what exact text was
+sent" are different reproducibility questions:
+
+- `prompt_version` — identifies the *template*: `{prompt_name}@{semantic_version}` (e.g.
+  `buyer_prompt@v1`), bumped manually whenever a `src/llm/prompts/*.txt` file changes. Answers
+  "which version of the prompt design was this?"
+- `rendered_prompt_hash` — a `sha256` of the *exact rendered prompt text* sent for this specific
+  call (template + that call's context values substituted in). Answers "what did the model
+  literally receive?" A model comparison is only reproducible if both are known — two calls
+  with the same `prompt_version` can still have different `rendered_prompt_hash`es because the
+  context (wallet balance, macro state, opponent offer) differs call to call, and that's
+  expected, not a bug.
 
 `MarketSnapshotRecord` (new table) — `retrieval_timestamp`, `source`, `ticker`, `price`,
 `data_window`, linked to the simulation/negotiation it informed.
@@ -352,8 +407,17 @@ A controlled comparison, not just a demo:
   prompt) × model (5, pinned via the `model_comparison` routing policy — no substitution).
 - **Held constant**: agent profile, risk parameters, market state, available currencies,
   transaction opportunities, random seed, opponent behavior.
-- **Dependent variables**: USDC vs. USDT selection rate, governance-attribute weighting,
-  liquidity sacrifice, negotiation outcome, hallucination rate.
+- **Dependent variables, explicitly tiered by evidential strength** (per the design review —
+  self-reported reasoning is not proof the model weighted governance, only choice behavior is):
+  - *Primary outcome* (observed choice, strong evidence): USDC vs. USDT selection rate.
+  - *Secondary behavioral outcome* (observed choice under a controlled trade-off scenario,
+    strong evidence): liquidity sacrificed — i.e. cases where the model picks the
+    better-governed/lower-liquidity option over the more-liquid/worse-governed one — and
+    negotiation outcome/hallucination rate.
+  - *Exploratory outcome* (self-report, weak evidence, reported separately and never merged
+    into the primary/secondary numbers): rate of `reported_reasoning` mentioning
+    governance/compliance terms. Used only to generate qualitative discussion, never as
+    quantitative proof of *why* a choice was made.
 - Runs real negotiations through the LLM layer end-to-end, settles deterministically, logs to
   the DB (`LLMDecisionRecord`, `MarketSnapshotRecord`) and W&B (`log_llm_metrics()`), and prints
   a plain-English results table keyed by (model × condition).
@@ -361,10 +425,18 @@ A controlled comparison, not just a demo:
 
 ## 13. Open risk / assumptions carried into the implementation plan
 
-- The 5 OpenRouter model slugs are best-effort guesses (one, `gpt-5.6-luna`, is a name the user
-  supplied verbatim that doesn't match any model this design's author has verified) — the
-  implementation plan must include a preflight check that fails loudly and specifically if a
-  slug doesn't resolve, rather than a silent no-op.
+- All 5 OpenRouter model slugs are now verified (§4 table, checked 2026-07-22) — this closes
+  the design review's mandatory item #1. The residual risk is only that OpenRouter's catalog
+  can change *after* this document is written, which is why the runtime preflight check (§4)
+  is still mandatory, not optional hardening.
 - Polygon.io's crypto ticker coverage for the specific stablecoins in scope (esp.
   gold-backed/tokenized-deposit tickers) is unverified; the graceful-degradation path is not
   optional polish, it's load-bearing.
+
+## 14. Sources for model-slug verification (2026-07-22)
+
+- [Claude Sonnet 5 - API Pricing & Benchmarks | OpenRouter](https://openrouter.ai/anthropic/claude-sonnet-5)
+- [GPT-5.6 Luna - API Pricing & Benchmarks | OpenRouter](https://openrouter.ai/openai/gpt-5.6-luna)
+- [DeepSeek V4 Pro - API Pricing & Benchmarks | OpenRouter](https://openrouter.ai/deepseek/deepseek-v4-pro)
+- [Gemini 3.5 Flash Lite - API Pricing & Benchmarks | OpenRouter](https://openrouter.ai/google/gemini-3.5-flash-lite)
+- [Sonar - API Pricing & Benchmarks | OpenRouter](https://openrouter.ai/perplexity/sonar)
