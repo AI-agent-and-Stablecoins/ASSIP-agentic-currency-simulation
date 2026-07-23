@@ -24,17 +24,19 @@ import os
 import httpx
 from dotenv import load_dotenv
 
+from database.repository import LLMDecisionLogEntry, LLMDecisionRepository
 from src.agents.agent_factory import build_agent, load_agent_profiles
 from src.blockchain.chain import load_chain_universe
 from src.blockchain.routing_engine import generate_candidates
 from src.currencies.currency import load_currency_universe
 from src.economy.macro_state import MacroState
-from src.llm.agent_reasoning import AgentDecisionContext, TransactionContext, build_decision_context, render_prompt
+from src.llm.agent_reasoning import AgentDecisionContext, TransactionContext, build_decision_context, render_prompt, PROMPT_VERSIONS, hash_rendered_prompt
 from src.llm.decision_schema import Decision, DecisionAction
 from src.llm.hallucination_detector import detect_hallucination
 from src.llm.llm_router import ModelCallFailedError, build_openrouter_client, call_model, load_model_roster
 from src.llm.market_intelligence import load_currency_profile
 from src.utils.constants import REPO_ROOT
+from src.utils.helpers import generate_id
 
 load_dotenv(REPO_ROOT / ".env")
 
@@ -81,10 +83,17 @@ def _build_context(governance_prompt_enabled: bool) -> AgentDecisionContext:
     )
 
 
-def run_cell(model_id: str, governance_prompt_enabled: bool, client: httpx.Client) -> dict:
+def run_cell(
+    model_id: str,
+    governance_prompt_enabled: bool,
+    client: httpx.Client,
+    repository: LLMDecisionRepository | None = None,
+) -> dict:
     """Runs one (model, condition) cell. Returns a plain dict rather than a
     pydantic model since this is a script-level result row, not a value
-    passed between typed interfaces."""
+    passed between typed interfaces. If a repository is supplied, also
+    persists the decision -- callers that only want the printed table (e.g.
+    tests/test_experiment_007_live.py) may omit it."""
     context = _build_context(governance_prompt_enabled)
     schema_json = json.dumps(Decision.model_json_schema())
     prompt = render_prompt("buyer", context, schema_json)
@@ -92,9 +101,6 @@ def run_cell(model_id: str, governance_prompt_enabled: bool, client: httpx.Clien
     try:
         decision = call_model(prompt, model_id, client)
     except ModelCallFailedError as exc:
-        # No cross-model substitution for this experiment: an excluded cell
-        # is reported as excluded, never silently backfilled by a different
-        # model -- see the design doc §4/§7 on keeping "model" a clean factor.
         return {
             "model_id": model_id,
             "governance_prompt_enabled": governance_prompt_enabled,
@@ -106,6 +112,38 @@ def run_cell(model_id: str, governance_prompt_enabled: bool, client: httpx.Clien
     if decision.action in (DecisionAction.OFFER, DecisionAction.COUNTER_OFFER, DecisionAction.ACCEPT):
         hallucination = detect_hallucination(
             GOOD_TRUE_PRICE, decision.price, currency_symbol=decision.proposed_currency, actual_model=model_id
+        )
+
+    if repository is not None:
+        repository.record(
+            LLMDecisionLogEntry(
+                decision_id=generate_id("dec"),
+                simulation_id="experiment_007_governance_prompting",
+                timestep=0,
+                agent_id=context.agent.agent_id,
+                agent_type=context.agent.agent_class,
+                requested_model=model_id,
+                actual_model=model_id,
+                fallback_used=False,
+                fallback_reason=None,
+                model_attempts=[model_id],
+                prompt_version=PROMPT_VERSIONS["buyer"],
+                rendered_prompt_hash=hash_rendered_prompt(prompt),
+                action=decision.action.value,
+                currency=decision.proposed_currency,
+                chain=decision.proposed_chain,
+                amount=decision.amount,
+                price=decision.price,
+                reported_reasoning=decision.reasoning,
+                negotiation_id=None,
+                round=0,
+                risk_profile=context.agent.risk_profile,
+                utility_type=context.agent.utility_type,
+                utility_parameters={"risk_aversion": context.agent.risk_aversion, "eis": context.agent.eis},
+                scenario="experiment_007_governance_prompting",
+                domestic_or_cross_border="cross_border" if context.transaction_context.is_cross_border else "domestic",
+                governance_prompt_enabled=governance_prompt_enabled,
+            )
         )
 
     return {
@@ -147,6 +185,8 @@ def _print_results_table(results: list[dict]) -> None:
 
 
 def main() -> None:
+    from database.session import create_all_tables, new_session
+
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set -- see .env.example")
@@ -155,11 +195,16 @@ def main() -> None:
     client = build_openrouter_client(api_key)
     pinned_models = [roster.resolve(label) for label in roster.routing_policies.model_comparison.pinned_models]
 
+    create_all_tables()
+    session = new_session()
+    repository = LLMDecisionRepository(session)
+
     results = [
-        run_cell(model_id, governance_prompt_enabled, client)
+        run_cell(model_id, governance_prompt_enabled, client, repository)
         for governance_prompt_enabled in (False, True)
         for model_id in pinned_models
     ]
+    session.commit()
 
     _print_results_table(results)
 
