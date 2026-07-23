@@ -187,3 +187,62 @@ def call_model(
                 continue
 
     raise ModelCallFailedError(model_id, last_error)
+
+
+class LLMCallResult(BaseModel):
+    requested_model: str
+    actual_model: str
+    fallback_used: bool
+    fallback_reason: str | None
+    model_attempts: list[str]
+    decision: Decision
+
+
+class AllModelsFailedError(Exception):
+    def __init__(self, model_ids: list[str], last_reason: str):
+        self.model_ids = model_ids
+        self.last_reason = last_reason
+        super().__init__(f"All models in the chain failed: {model_ids}; last reason: {last_reason}")
+
+
+def call_with_fallback_chain(
+    prompt: str,
+    model_ids: list[str],
+    client: httpx.Client,
+    retry_config: RetryConfig | None = None,
+) -> LLMCallResult:
+    """Try model_ids in order, stopping at the first success. model_ids[0] is
+    the requested model; later entries are only tried once an earlier one
+    exhausts its own retries/repair attempts inside call_model.
+
+    Used by the default_reliability_chain routing policy. NOT used by the
+    model_comparison policy, which calls call_model directly per pinned
+    model with no substitution -- see Task 23's experiment_007, which must
+    keep "model" a clean experimental factor rather than confounding it with
+    reliability.
+    """
+    if not model_ids:
+        raise ValueError("model_ids must contain at least one model")
+
+    requested_model = model_ids[0]
+    attempts: list[str] = []
+    last_reason = "no models attempted"
+
+    for index, model_id in enumerate(model_ids):
+        attempts.append(model_id)
+        try:
+            decision = call_model(prompt, model_id, client, retry_config)
+        except ModelCallFailedError as exc:
+            last_reason = exc.reason
+            continue
+
+        return LLMCallResult(
+            requested_model=requested_model,
+            actual_model=model_id,
+            fallback_used=index > 0,
+            fallback_reason=last_reason if index > 0 else None,
+            model_attempts=attempts,
+            decision=decision,
+        )
+
+    raise AllModelsFailedError(model_ids, last_reason)

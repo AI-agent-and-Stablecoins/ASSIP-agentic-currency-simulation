@@ -5,12 +5,14 @@ import pytest
 
 from src.llm.decision_schema import Decision, DecisionAction
 from src.llm.llm_router import (
+    AllModelsFailedError,
     AuthenticationError,
     ModelCallFailedError,
     ModelNotAvailableError,
     OPENROUTER_BASE_URL,
     RetryConfig,
     call_model,
+    call_with_fallback_chain,
     load_model_roster,
     verify_model_roster,
 )
@@ -181,3 +183,74 @@ def test_call_model_gives_up_when_repair_also_fails_repeatedly():
 
     with pytest.raises(ModelCallFailedError):
         call_model("prompt", "anthropic/claude-sonnet-5", client, RetryConfig(max_retries=2, sleep_fn=lambda s: None))
+
+
+def test_fallback_chain_uses_primary_when_it_succeeds():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_chat_response(_decision_json()))
+
+    client = httpx.Client(base_url=OPENROUTER_BASE_URL, transport=httpx.MockTransport(handler))
+
+    result = call_with_fallback_chain("prompt", ["model-a", "model-b"], client, RetryConfig(sleep_fn=lambda s: None))
+
+    assert result.requested_model == "model-a"
+    assert result.actual_model == "model-a"
+    assert result.fallback_used is False
+    assert result.fallback_reason is None
+    assert result.model_attempts == ["model-a"]
+
+
+def test_fallback_chain_falls_through_when_primary_exhausts_retries():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["model"] == "model-a":
+            return httpx.Response(500, json={"error": "down"})
+        return httpx.Response(200, json=_chat_response(_decision_json()))
+
+    client = httpx.Client(base_url=OPENROUTER_BASE_URL, transport=httpx.MockTransport(handler))
+
+    result = call_with_fallback_chain(
+        "prompt", ["model-a", "model-b"], client, RetryConfig(max_retries=1, sleep_fn=lambda s: None)
+    )
+
+    assert result.requested_model == "model-a"
+    assert result.actual_model == "model-b"
+    assert result.fallback_used is True
+    assert result.fallback_reason == "HTTP 500"
+    assert result.model_attempts == ["model-a", "model-b"]
+
+
+def test_fallback_chain_raises_when_every_model_fails():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "down"})
+
+    client = httpx.Client(base_url=OPENROUTER_BASE_URL, transport=httpx.MockTransport(handler))
+
+    with pytest.raises(AllModelsFailedError):
+        call_with_fallback_chain(
+            "prompt", ["model-a", "model-b"], client, RetryConfig(max_retries=1, sleep_fn=lambda s: None)
+        )
+
+
+def test_fallback_chain_propagates_auth_error_without_trying_other_models():
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        return httpx.Response(401, json={"error": "bad key"})
+
+    client = httpx.Client(base_url=OPENROUTER_BASE_URL, transport=httpx.MockTransport(handler))
+
+    with pytest.raises(AuthenticationError):
+        call_with_fallback_chain(
+            "prompt", ["model-a", "model-b"], client, RetryConfig(max_retries=3, sleep_fn=lambda s: None)
+        )
+
+    assert calls["count"] == 1
+
+
+def test_fallback_chain_rejects_empty_model_list():
+    client = httpx.Client(base_url=OPENROUTER_BASE_URL, transport=httpx.MockTransport(lambda r: httpx.Response(200)))
+
+    with pytest.raises(ValueError):
+        call_with_fallback_chain("prompt", [], client)
