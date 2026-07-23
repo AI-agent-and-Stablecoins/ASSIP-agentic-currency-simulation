@@ -39,8 +39,9 @@ class AgentProfileConfig(BaseModel):
     name: str
     agent_class: AgentClass
     risk_tolerance: Literal["low", "medium", "high"]
-    utility_type: Literal["crra", "cara", "multi_attribute"]
+    utility_type: Literal["crra", "cara", "multi_attribute", "risk_neutral", "epstein_zin_proxy"]
     risk_aversion: float | None = None
+    eis: float | None = None
     weights: MultiAttributeWeights | None = None
     initial_wallet: dict[str, float] = {}
 
@@ -51,7 +52,7 @@ def load_agent_profiles(config_dir: Path = CONFIG_ROOT / "agent_profiles") -> di
 
 def build_agent(profile: AgentProfileConfig) -> BaseAgent:
     agent_cls = _AGENT_CLASSES[profile.agent_class]
-    utility_fn = build_utility_function(profile.utility_type, profile.risk_aversion, profile.weights)
+    utility_fn = build_utility_function(profile.utility_type, profile.risk_aversion, profile.weights, profile.eis)
     wallet = Wallet(balances=dict(profile.initial_wallet))
     return agent_cls(
         agent_id=generate_id(profile.agent_class),
