@@ -35,6 +35,7 @@ include = ["src*", "database*", "sandbox*", "metrics*"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = ["live: hits a real external API (OpenRouter); requires RUN_LIVE_LLM_TESTS=1 to run"]
 
 [tool.mypy]
 python_version = "3.12"
