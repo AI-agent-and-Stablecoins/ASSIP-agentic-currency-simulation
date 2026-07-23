@@ -1,0 +1,40 @@
+symbol: USDC
+executive_summary: >-
+  USDC is a USD-backed stablecoin issued by Circle since Sept 2018, 100%
+  backed by cash and short-term US Treasuries. The largest fully-regulated
+  stablecoin, used globally for payments, trading, and DeFi. Mint-and-burn
+  on demand; grew from ~$33B supply in early 2024 to ~$60B by Q1 2026.
+timeline:
+  - date: "2018-09"
+    event: USDC launched by Circle and Coinbase (Centre consortium)
+  - date: "2021-03"
+    event: SVB banking crisis causes a brief USDC depeg to $0.87
+  - date: "2023-08"
+    event: Centre consortium wound down; Circle becomes sole issuer
+  - date: "2024-07"
+    event: Circle obtains French EMI license for USDC/EURC
+  - date: "2025-06-05"
+    event: Circle IPO on NYSE (CRCL); reserve disclosures in SEC filings
+reserves_and_transparency: >-
+  100% collateralized by cash and short-duration US Treasuries; ~80% sits in
+  the BlackRock-managed Circle Reserve Fund, rest in cash at large banks.
+  Daily public breakdown via BlackRock; monthly Deloitte attestations.
+  Considered industry-leading transparency.
+governance: >-
+  Centrally managed by Circle (US corporation, NYSE-listed post-IPO).
+  Issuance/reserve-policy decisions made by Circle's executive team; no
+  token-holder governance.
+price_and_market_cap: >-
+  Trades at ~$1 by design; only major dip was the SVB weekend (Mar 2023) to
+  $0.87. Supply ~$60B by Q1 2026, second-largest stablecoin behind USDT.
+crra_cara_note: "Unused/unspecified."
+use_cases: >-
+  General-purpose digital dollar: trading (esp. US-regulated exchanges),
+  DeFi lending/borrowing, cross-border payments, institutional treasury
+  management. Reserve yield accrues to Circle, not holders.
+regulatory_and_controversies: >-
+  Licensed in nearly all US states, EU Electronic Money Institution; fits
+  the US GENIUS Act (2025) and EU MiCA. No major enforcement actions; SVB
+  incident was a stress test resolved without regulator action.
+source: deep-research-report.md
+report_date: "2026-07"

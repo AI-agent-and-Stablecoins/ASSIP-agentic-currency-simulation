@@ -1,0 +1,43 @@
+symbol: DAI
+executive_summary: >-
+  DAI is a decentralized USD-pegged stablecoin managed by MakerDAO (rebranded
+  Sky). Launched Dec 2017 as Single-Collateral DAI, upgraded to
+  Multi-Collateral DAI in Nov 2019. Backed by on-chain crypto collateral
+  (ETH, WBTC, LINK, other stablecoins, tokenized US Treasuries) locked in
+  Maker vaults, governed by MKR/SKY token holders. Circulating supply was
+  ~4.7B by mid-2026 (combined with Sky's USDS, ~$13B).
+timeline:
+  - date: "2017-12-18"
+    event: Launch of Single-Collateral DAI (SAI) on Ethereum
+  - date: "2019-11-18"
+    event: Multi-Collateral DAI (MCD) upgrade launched
+  - date: "2020-03"
+    event: "\"Black Thursday\" ETH crash; DAI briefly dipped to ~$0.90"
+  - date: "2022-05"
+    event: TerraUSD crash pressures the stablecoin market; DAI market cap fell from $8B to $6.3B
+  - date: "2024-08-27"
+    event: MakerDAO rebrands to Sky; announces USDS stablecoin
+reserves_and_transparency: >-
+  Reserve is on-chain crypto collateral, fully auditable via smart contracts
+  (no off-chain custodian). Maker publishes audited reports; treasury
+  includes yield-bearing assets like tokenized US Treasuries via Centrifuge.
+  Risk parameters (collateralization ratios) are public via governance.
+governance: >-
+  Fully decentralized: MKR/SKY token holders vote on risk parameters,
+  collateral types, and protocol changes via on-chain governance. No central
+  issuer; issuance/burn is automated by smart contracts on vault lock/unlock.
+price_and_market_cap: >-
+  Soft peg to $1 via overcollateralization and stability fees; all-time high
+  $3.67 (Nov 2019), low $0.897 (Mar 2023). Market cap peaked above $8B in
+  2022, ~$4-5B by mid-2026.
+crra_cara_note: "Not specified. MakerDAO manages risk via overcollateralization and adjustable stability fees, not CRRA/CARA terminology."
+use_cases: >-
+  DeFi collateral, lending/borrowing, trading, on-chain dollar exposure,
+  liquidity for tokenized real-world-asset markets.
+regulatory_and_controversies: >-
+  Little direct regulatory enforcement given its decentralized structure.
+  Notable: 2020 Black Thursday liquidation/oracle controversy; internal
+  governance disputes; real-world-asset integration attracted scrutiny but is
+  generally seen as regulator-friendly. No major sanctions or fines reported.
+source: deep-research-report.md
+report_date: "2026-07"

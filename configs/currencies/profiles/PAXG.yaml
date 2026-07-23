@@ -1,0 +1,37 @@
+symbol: PAXG
+executive_summary: >-
+  PAXG is a gold-backed token by Paxos Trust Company (NY), launched Sept 5
+  2019. Each PAXG token represents one fine troy ounce of London Good
+  Delivery gold held in London vaults, redeemable 1:1 for gold or fiat.
+  Market cap ~$1.8-2.0B as of 2026 (~450k tokens circulating).
+timeline:
+  - date: "2019-09-05"
+    event: PAXG launched (NYDFS-approved)
+  - date: "2020-08-26"
+    event: PAXG listed on Binance
+  - date: "2021"
+    event: PAXG added on other exchanges and networks
+  - date: "2024"
+    event: Continual monthly audit attestations by Withum
+reserves_and_transparency: >-
+  100% backed by physical LBMA-grade gold in professional London vaults
+  (e.g. Brink's). Monthly attestations by Withum matching PAXG supply to
+  ounces in custody, published publicly; holders can verify entitlement via
+  an Ethereum lookup tool. Custody regulated by NYDFS oversight.
+governance: >-
+  Centrally governed by Paxos Trust Company (NY state-chartered trust,
+  NYDFS-regulated board-approved policy). No DAO; token holders have no
+  governance rights beyond redemption.
+price_and_market_cap: >-
+  Price tracks gold spot (~$4,100-4,200/oz in 2026). All-time high $5,619,
+  low $1,399. Market cap ~450k tokens x ~$4,100 ~= $1.85B.
+crra_cara_note: "Unused/unspecified."
+use_cases: >-
+  Digital gold ownership, portfolio diversification, DeFi collateral, quick
+  settlement of gold trades, inflation hedging.
+regulatory_and_controversies: >-
+  Regulated under NYDFS; audited monthly; avoided major controversy. Paxos's
+  separate USD stablecoin (Paxos Standard/PAX) was shut down by NYDFS in
+  2023, but PAXG itself remained active and unaffected.
+source: deep-research-report.md
+report_date: "2026-07"

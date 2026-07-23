@@ -1,0 +1,27 @@
+models:
+  - id: anthropic/claude-sonnet-5
+    label: claude-sonnet-5
+  - id: openai/gpt-5.6-luna
+    label: gpt-5.6-luna
+  - id: deepseek/deepseek-v4-pro
+    label: deepseek-v4-pro
+  - id: google/gemini-3.5-flash-lite
+    label: gemini-3.5-flash-lite
+  - id: perplexity/sonar
+    label: perplexity-sonar
+
+routing_policies:
+  default_reliability_chain:
+    primary: claude-sonnet-5
+    fallbacks:
+      - gpt-5.6-luna
+      - deepseek-v4-pro
+      - gemini-3.5-flash-lite
+      - perplexity-sonar
+  model_comparison:
+    pinned_models:
+      - claude-sonnet-5
+      - gpt-5.6-luna
+      - deepseek-v4-pro
+      - gemini-3.5-flash-lite
+      - perplexity-sonar

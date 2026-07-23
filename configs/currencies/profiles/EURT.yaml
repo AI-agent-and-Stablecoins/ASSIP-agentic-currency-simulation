@@ -1,0 +1,37 @@
+symbol: EURT
+executive_summary: >-
+  EURT was Tether's euro-backed stablecoin, pegged 1:1 to EUR, launched Oct
+  8 2020 on Ethereum. Claimed full euro-reserve backing with off-chain
+  redemption via Tether. Usage was minor versus USD stablecoins; Tether wound
+  down issuance in 2025.
+timeline:
+  - date: "2020-10-08"
+    event: EURT launched on Ethereum
+  - date: "2022"
+    event: New EURT issuance mostly halts
+  - date: "2025-10-27"
+    event: Tether announces wind-down of EURT issuance/redemption (deadline Nov 27 2025)
+  - date: "2025-11-27"
+    event: Official redemption deadline for EURT holders
+reserves_and_transparency: >-
+  Claimed 100% EUR reserves, but composition was opaque and comingled with
+  Tether's broader reserves; no dedicated external audit of EURT
+  specifically, only broad Tether reserve reports.
+governance: >-
+  Centrally controlled by Tether Operations Ltd; no on-chain governance.
+  Wind-down decision made by Tether executive management (Nov 2025
+  statements from CEO Paolo Ardoino).
+price_and_market_cap: >-
+  Traded at ~EUR1 (~$1.10). Market cap peaked modestly (~EUR250M supply);
+  by 2026, market cap was very small (~$0.2M) ahead of wind-down.
+crra_cara_note: "Unused/unspecified."
+use_cases: >-
+  Euro-denominated crypto trading pairs and limited on-chain euro liquidity
+  within Tether's ecosystem; adoption was low relative to USDT.
+regulatory_and_controversies: >-
+  Tether cited "lack of a risk-averse regulatory framework in Europe" as the
+  reason for winding down issuance. General Tether controversies (2017
+  reserve claims, 2021 NYAG settlement) apply by extension, not specific to
+  EURT. Not redeemable in euros after Nov 27 2025.
+source: deep-research-report.md
+report_date: "2026-07"
