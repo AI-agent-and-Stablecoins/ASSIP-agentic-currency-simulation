@@ -1,13 +1,27 @@
-"""Calls an LLM to generate agent decisions.
+"""Assembles the context an LLM needs to make an economically meaningful
+decision, and (in Task 15) drives the actual LLM call.
 
-Not implemented in Phase 1 -- see src/utility/ for the rule-based decision
-logic Phase 1 agents actually use. This is the Phase 2 extension point where
-LLM-generated reasoning replaces/augments utility-function math. Per the
-project's coding standards, this module must never directly alter balances
-even once implemented -- it only produces reasoning/decisions that flow
-through src/transactions/settlement.py like any other agent decision.
+AgentUtilityContext is the agent-side slice only (identity, risk profile,
+utility parameters, wallet) -- everything an agent knows about itself.
+Environment-level context (currency governance, market intelligence, macro
+state, opponent offers) is assembled separately in Task 13's
+build_decision_context, which takes plain values rather than Environment/
+BaseAgent objects, matching this codebase's existing layering convention
+(e.g. src.blockchain.routing_engine.generate_candidates takes plain
+balances, not a Wallet).
 """
 
+from pydantic import BaseModel
 
-def generate_reasoning(prompt: str) -> str:
-    raise NotImplementedError("LLM reasoning is a Phase 2 feature; Phase 1 agents are rule-based")
+from src.utility.multi_attribute import MultiAttributeWeights
+
+
+class AgentUtilityContext(BaseModel):
+    agent_id: str
+    agent_class: str
+    risk_profile: str
+    utility_type: str
+    risk_aversion: float | None = None
+    eis: float | None = None
+    multi_attribute_weights: MultiAttributeWeights | None = None
+    wallet_balances: dict[str, float] = {}

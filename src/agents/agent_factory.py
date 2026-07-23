@@ -61,4 +61,8 @@ def build_agent(profile: AgentProfileConfig) -> BaseAgent:
         risk_profile=profile.risk_tolerance,
         wallet=wallet,
         utility_fn=utility_fn,
+        utility_type=profile.utility_type,
+        risk_aversion=profile.risk_aversion,
+        eis=profile.eis,
+        multi_attribute_weights=profile.weights,
     )
