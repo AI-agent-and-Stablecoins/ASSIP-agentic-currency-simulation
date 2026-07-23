@@ -7,14 +7,17 @@ static corpus must be presented to the LLM as background/historical
 information, not current market state -- see the design doc's §6.
 """
 
+from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 from pydantic import BaseModel, Field
 
 from src.utils.config_loader import load_yaml_as
 from src.utils.constants import CONFIG_ROOT
 
 PROFILES_DIR = CONFIG_ROOT / "currencies" / "profiles"
+POLYGON_BASE_URL = "https://api.polygon.io"
 
 
 class TimelineEvent(BaseModel):
@@ -48,3 +51,37 @@ def load_currency_profile(symbol: str, profiles_dir: Path = PROFILES_DIR) -> Cur
     if not path.exists():
         return None
     return load_yaml_as(path, CurrencyProfile)
+
+
+def build_polygon_client(api_key: str, transport: httpx.BaseTransport | None = None) -> httpx.Client:
+    return httpx.Client(base_url=POLYGON_BASE_URL, params={"apiKey": api_key}, transport=transport, timeout=15.0)
+
+
+class LivePriceSnapshot(BaseModel):
+    ticker: str
+    price: float | None
+    retrieval_timestamp: datetime
+    source: str = "polygon"
+    data_window: str | None = None
+    unavailable_reason: str | None = None
+
+
+def fetch_live_price(ticker: str, client: httpx.Client) -> LivePriceSnapshot:
+    """Fetch a live crypto aggregate price for `ticker` (e.g. "X:USDCUSD").
+
+    Never raises on a data or network problem -- a market-data outage must
+    not crash a negotiation, so failures come back as a snapshot with
+    price=None and unavailable_reason set, not an exception.
+    """
+    now = datetime.now(timezone.utc)
+    try:
+        response = client.get(f"/v2/aggs/ticker/{ticker}/prev")
+        response.raise_for_status()
+        results = response.json().get("results") or []
+        if not results:
+            return LivePriceSnapshot(ticker=ticker, price=None, retrieval_timestamp=now, unavailable_reason="no data returned for this ticker")
+        return LivePriceSnapshot(
+            ticker=ticker, price=results[0]["c"], retrieval_timestamp=now, data_window="previous close"
+        )
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        return LivePriceSnapshot(ticker=ticker, price=None, retrieval_timestamp=now, unavailable_reason=str(exc))
