@@ -1,7 +1,15 @@
+import json as _json
+
+import httpx
+
 from src.agents.agent_factory import build_agent, load_agent_profiles
 from src.blockchain.routing_engine import CurrencyChainOption
 from src.economy.macro_state import MacroState
 from src.llm.agent_reasoning import AgentDecisionContext, AgentUtilityContext, TransactionContext, build_decision_context, prompt_version_for, render_prompt
+from src.llm.agent_reasoning import LLMDecisionOutcome, decide
+from src.llm.decision_adapter import NegotiationAction
+from src.llm.decision_schema import DecisionAction
+from src.llm.llm_router import OPENROUTER_BASE_URL, RetryConfig, load_model_roster
 from src.llm.market_intelligence import load_currency_profile
 
 
@@ -122,3 +130,149 @@ def test_render_prompt_works_for_all_four_agent_classes():
 
 def test_prompt_version_for_returns_stable_identifier():
     assert prompt_version_for("buyer") == "buyer_prompt@v1"
+
+
+def _decision_json(action: str = "OFFER", currency: str = "USDC", price: float = 100.0) -> str:
+    return _json.dumps(
+        {
+            "action": action,
+            "proposed_currency": currency,
+            "proposed_chain": "ethereum",
+            "amount": 1.0,
+            "price": price,
+            "reasoning": "test",
+        }
+    )
+
+
+def _chat_response(content: str) -> dict:
+    return {"choices": [{"message": {"content": content}}]}
+
+
+def _base_decision_context() -> AgentDecisionContext:
+    agent_context = AgentUtilityContext(
+        agent_id="buyer-1",
+        agent_class="buyer",
+        risk_profile="low",
+        utility_type="crra",
+        risk_aversion=3.0,
+        wallet_balances={"USDC": 1000.0},
+    )
+    candidates = [_option(currency_symbol="USDC")]
+    macro = MacroState()
+    txn_context = TransactionContext(is_cross_border=False)
+    return build_decision_context(agent_context, candidates, {}, macro, macro, txn_context)
+
+
+def test_decide_returns_valid_negotiation_action_on_first_try():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_chat_response(_decision_json()))
+
+    client = httpx.Client(base_url=OPENROUTER_BASE_URL, transport=httpx.MockTransport(handler))
+    roster = load_model_roster()
+
+    outcome = decide(
+        "buyer",
+        _base_decision_context(),
+        roster,
+        client,
+        {"USDC"},
+        {"ethereum"},
+        retry_config=RetryConfig(sleep_fn=lambda s: None),
+    )
+
+    assert isinstance(outcome, LLMDecisionOutcome)
+    assert outcome.used_deterministic_fallback is False
+    assert outcome.negotiation_action.currency_symbol == "USDC"
+    assert outcome.correction_attempts == 0
+    assert outcome.call_result.actual_model == "anthropic/claude-sonnet-5"
+
+
+def test_decide_corrects_economically_invalid_decision_with_the_same_model():
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return httpx.Response(200, json=_chat_response(_decision_json(currency="NOTACOIN")))
+        return httpx.Response(200, json=_chat_response(_decision_json(currency="USDC")))
+
+    client = httpx.Client(base_url=OPENROUTER_BASE_URL, transport=httpx.MockTransport(handler))
+    roster = load_model_roster()
+
+    outcome = decide(
+        "buyer",
+        _base_decision_context(),
+        roster,
+        client,
+        {"USDC"},
+        {"ethereum"},
+        retry_config=RetryConfig(sleep_fn=lambda s: None),
+    )
+
+    assert outcome.used_deterministic_fallback is False
+    assert outcome.correction_attempts == 1
+    assert outcome.negotiation_action.currency_symbol == "USDC"
+
+
+def test_decide_falls_back_deterministically_after_exhausting_correction_attempts():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_chat_response(_decision_json(currency="NOTACOIN")))
+
+    client = httpx.Client(base_url=OPENROUTER_BASE_URL, transport=httpx.MockTransport(handler))
+    roster = load_model_roster()
+    fallback_action = NegotiationAction(
+        action=DecisionAction.WALK_AWAY,
+        price=0.0,
+        amount=0.0,
+        currency_symbol="USDC",
+        chain_name="ethereum",
+        reasoning="deterministic fallback",
+    )
+
+    outcome = decide(
+        "buyer",
+        _base_decision_context(),
+        roster,
+        client,
+        {"USDC"},
+        {"ethereum"},
+        retry_config=RetryConfig(sleep_fn=lambda s: None),
+        max_correction_attempts=2,
+        deterministic_fallback=lambda: fallback_action,
+    )
+
+    assert outcome.used_deterministic_fallback is True
+    assert outcome.correction_attempts == 2
+    assert outcome.negotiation_action is fallback_action
+
+
+def test_decide_falls_back_when_every_model_in_the_chain_fails():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "down"})
+
+    client = httpx.Client(base_url=OPENROUTER_BASE_URL, transport=httpx.MockTransport(handler))
+    roster = load_model_roster()
+    fallback_action = NegotiationAction(
+        action=DecisionAction.WALK_AWAY,
+        price=0.0,
+        amount=0.0,
+        currency_symbol="USDC",
+        chain_name="ethereum",
+        reasoning="deterministic fallback",
+    )
+
+    outcome = decide(
+        "buyer",
+        _base_decision_context(),
+        roster,
+        client,
+        {"USDC"},
+        {"ethereum"},
+        retry_config=RetryConfig(max_retries=1, sleep_fn=lambda s: None),
+        deterministic_fallback=lambda: fallback_action,
+    )
+
+    assert outcome.used_deterministic_fallback is True
+    assert outcome.call_result is None
+    assert outcome.negotiation_action is fallback_action
