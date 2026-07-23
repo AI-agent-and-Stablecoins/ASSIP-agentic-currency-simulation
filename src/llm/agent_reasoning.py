@@ -33,7 +33,7 @@ from src.llm.llm_router import (
     call_model,
     call_with_fallback_chain,
 )
-from src.llm.market_intelligence import CurrencyProfile
+from src.llm.market_intelligence import CurrencyProfile, LivePriceSnapshot
 from src.utility.multi_attribute import MultiAttributeWeights
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
@@ -76,6 +76,7 @@ class AgentDecisionContext(BaseModel):
     agent: AgentUtilityContext
     candidates: list[CurrencyChainOption]
     currency_profiles: dict[str, CurrencyProfile] = {}
+    live_price_snapshots: dict[str, LivePriceSnapshot] = {}
     objective_macro_state: MacroState
     perceived_macro_state: MacroState
     transaction_context: TransactionContext
@@ -94,15 +95,22 @@ def build_decision_context(
     opponent_offer: NegotiationAction | None = None,
     conversation_history: list[str] | None = None,
     governance_prompt_enabled: bool = False,
+    live_price_snapshots: dict[str, LivePriceSnapshot] | None = None,
 ) -> AgentDecisionContext:
     candidate_symbols = {candidate.currency_symbol for candidate in candidates}
     relevant_profiles = {
         symbol: profile for symbol, profile in currency_profiles.items() if symbol in candidate_symbols
     }
+    relevant_snapshots = {
+        symbol: snapshot
+        for symbol, snapshot in (live_price_snapshots or {}).items()
+        if symbol in candidate_symbols
+    }
     return AgentDecisionContext(
         agent=agent_context,
         candidates=candidates,
         currency_profiles=relevant_profiles,
+        live_price_snapshots=relevant_snapshots,
         objective_macro_state=objective_macro_state,
         perceived_macro_state=perceived_macro_state,
         transaction_context=transaction_context,
@@ -181,12 +189,27 @@ def _format_conversation_block(history: list[str]) -> str:
     return "\n".join(history) if history else "(negotiation has not started yet)"
 
 
+def _format_live_price_block(snapshots: dict[str, LivePriceSnapshot]) -> str:
+    if not snapshots:
+        return "(no live price data available)"
+    lines = []
+    for symbol, snapshot in snapshots.items():
+        if snapshot.price is None:
+            lines.append(f"- {symbol}: live price unavailable ({snapshot.unavailable_reason})")
+        else:
+            lines.append(
+                f"- {symbol}: {snapshot.price} (retrieved {snapshot.retrieval_timestamp.isoformat()}, {snapshot.source})"
+            )
+    return "\n".join(lines)
+
+
 def render_prompt(agent_class: str, context: AgentDecisionContext, schema_json: str) -> str:
     template = (PROMPTS_DIR / f"{agent_class}_prompt.txt").read_text(encoding="utf-8")
     fields = {
         "utility_context_block": _format_utility_context_block(context.agent),
         "candidates_block": _format_candidates_block(context.candidates),
         "currency_profiles_block": _format_currency_profiles_block(context.currency_profiles),
+        "live_price_block": _format_live_price_block(context.live_price_snapshots),
         "macro_block": _format_macro_block(context.objective_macro_state, context.perceived_macro_state),
         "transaction_block": _format_transaction_block(context.transaction_context),
         "governance_block": _GOVERNANCE_EMPHASIS_BLOCK if context.governance_prompt_enabled else "",

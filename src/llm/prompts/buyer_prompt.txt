@@ -9,6 +9,9 @@ You are an AI buyer agent negotiating a purchase in a simulated digital-currency
 # Background information on these currencies -- historical, not current market state
 {currency_profiles_block}
 
+# Live price data -- current, not historical
+{live_price_block}
+
 # Macro-economic conditions
 {macro_block}
 

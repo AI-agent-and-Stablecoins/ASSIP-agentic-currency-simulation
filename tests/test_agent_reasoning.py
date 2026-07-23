@@ -1,4 +1,5 @@
 import json as _json
+from datetime import datetime, timezone
 
 import httpx
 
@@ -10,7 +11,7 @@ from src.llm.agent_reasoning import LLMDecisionOutcome, decide
 from src.llm.decision_adapter import NegotiationAction
 from src.llm.decision_schema import DecisionAction
 from src.llm.llm_router import OPENROUTER_BASE_URL, RetryConfig, load_model_roster
-from src.llm.market_intelligence import load_currency_profile
+from src.llm.market_intelligence import load_currency_profile, LivePriceSnapshot
 
 
 def test_build_llm_context_surfaces_crra_agent_parameters():
@@ -276,3 +277,78 @@ def test_decide_falls_back_when_every_model_in_the_chain_fails():
     assert outcome.used_deterministic_fallback is True
     assert outcome.call_result is None
     assert outcome.negotiation_action is fallback_action
+
+
+def test_build_decision_context_filters_live_price_snapshots_to_candidates_only():
+    agent_context = AgentUtilityContext(
+        agent_id="a1",
+        agent_class="buyer",
+        risk_profile="low",
+        utility_type="crra",
+        risk_aversion=3.0,
+        wallet_balances={"USDC": 1000.0},
+    )
+    candidates = [_option(currency_symbol="USDC")]
+    macro = MacroState()
+    txn_context = TransactionContext(is_cross_border=False)
+    snapshots = {
+        "USDC": LivePriceSnapshot(ticker="X:USDCUSD", price=1.0001, retrieval_timestamp=datetime.now(timezone.utc)),
+        "USDT": LivePriceSnapshot(ticker="X:USDTUSD", price=0.9998, retrieval_timestamp=datetime.now(timezone.utc)),
+    }
+
+    context = build_decision_context(
+        agent_context, candidates, {}, macro, macro, txn_context, live_price_snapshots=snapshots
+    )
+
+    assert set(context.live_price_snapshots.keys()) == {"USDC"}
+
+
+def test_render_prompt_includes_live_price_block():
+    agent_context = AgentUtilityContext(
+        agent_id="a1",
+        agent_class="buyer",
+        risk_profile="low",
+        utility_type="crra",
+        risk_aversion=3.0,
+        wallet_balances={"USDC": 1000.0},
+    )
+    candidates = [_option(currency_symbol="USDC")]
+    macro = MacroState()
+    txn_context = TransactionContext(is_cross_border=False)
+    snapshots = {"USDC": LivePriceSnapshot(ticker="X:USDCUSD", price=1.0001, retrieval_timestamp=datetime.now(timezone.utc))}
+    context = build_decision_context(
+        agent_context, candidates, {}, macro, macro, txn_context, live_price_snapshots=snapshots
+    )
+
+    prompt = render_prompt("buyer", context, "{}")
+
+    assert "1.0001" in prompt
+
+
+def test_render_prompt_reports_unavailable_live_price_explicitly_not_silently():
+    agent_context = AgentUtilityContext(
+        agent_id="a1",
+        agent_class="buyer",
+        risk_profile="low",
+        utility_type="crra",
+        risk_aversion=3.0,
+        wallet_balances={"USDC": 1000.0},
+    )
+    candidates = [_option(currency_symbol="USDC")]
+    macro = MacroState()
+    txn_context = TransactionContext(is_cross_border=False)
+    snapshots = {
+        "USDC": LivePriceSnapshot(
+            ticker="X:USDCUSD",
+            price=None,
+            retrieval_timestamp=datetime.now(timezone.utc),
+            unavailable_reason="no data returned for this ticker",
+        )
+    }
+    context = build_decision_context(
+        agent_context, candidates, {}, macro, macro, txn_context, live_price_snapshots=snapshots
+    )
+
+    prompt = render_prompt("buyer", context, "{}")
+
+    assert "unavailable" in prompt
