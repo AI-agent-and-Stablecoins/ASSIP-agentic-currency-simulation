@@ -178,3 +178,15 @@ class SimulationRunRecord(Base):
     git_commit_hash: Mapped[str] = mapped_column(String)
     config_hash: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class InterventionLogRecord(Base):
+    __tablename__ = "intervention_logs"
+
+    event_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("simulation_runs.run_id"))
+    timestep: Mapped[int] = mapped_column(Integer)
+    shock_type: Mapped[str] = mapped_column(String)
+    target_currency: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_issuer: Mapped[str | None] = mapped_column(String, nullable=True)
+    magnitude: Mapped[float] = mapped_column(Float)

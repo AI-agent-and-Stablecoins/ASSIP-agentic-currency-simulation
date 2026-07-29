@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from database.models import (
     AgentRecord,
     HallucinationRecord,
+    InterventionLogRecord,
     LLMDecisionRecord,
     MarketSnapshotRecord,
     MetricRecord,
@@ -87,6 +88,15 @@ class SimulationRunLogEntry(BaseModel):
     prompt_version_hash: str
     git_commit_hash: str
     config_hash: str
+
+
+class InterventionLogEntry(BaseModel):
+    run_id: str
+    timestep: int
+    shock_type: str
+    target_currency: str | None = None
+    target_issuer: str | None = None
+    magnitude: float
 
 
 class AgentRepository:
@@ -201,6 +211,14 @@ class SimulationRunRepository:
 
     def record(self, entry: SimulationRunLogEntry) -> None:
         self.session.add(SimulationRunRecord(**entry.model_dump(), created_at=datetime.now(timezone.utc)))
+
+
+class InterventionLogRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(self, entry: InterventionLogEntry) -> None:
+        self.session.add(InterventionLogRecord(**entry.model_dump()))
 
 
 def persist_timestep(session: Session, env: Environment, result: TimestepResult) -> None:
