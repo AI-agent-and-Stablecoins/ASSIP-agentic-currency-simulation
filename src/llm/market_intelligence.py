@@ -1,0 +1,87 @@
+"""Feeds real-world stablecoin context into LLM prompts.
+
+Two clearly separate sources: a static, git-versioned profile corpus (this
+module's load_currency_profile, compiled from deep-research-report.md) and
+an optional live price snapshot (added in a later task, via Polygon). The
+static corpus must be presented to the LLM as background/historical
+information, not current market state -- see the design doc's §6.
+"""
+
+from datetime import datetime, timezone
+from pathlib import Path
+
+import httpx
+from pydantic import BaseModel, Field
+
+from src.utils.config_loader import load_yaml_as
+from src.utils.constants import CONFIG_ROOT
+
+PROFILES_DIR = CONFIG_ROOT / "currencies" / "profiles"
+POLYGON_BASE_URL = "https://api.polygon.io"
+
+
+class TimelineEvent(BaseModel):
+    date: str
+    event: str
+
+
+class CurrencyProfile(BaseModel):
+    symbol: str
+    executive_summary: str
+    timeline: list[TimelineEvent] = Field(default_factory=list)
+    reserves_and_transparency: str
+    governance: str
+    price_and_market_cap: str
+    crra_cara_note: str
+    use_cases: str
+    regulatory_and_controversies: str
+    source: str
+    report_date: str
+
+
+def load_currency_profile(symbol: str, profiles_dir: Path = PROFILES_DIR) -> CurrencyProfile | None:
+    """Return the static profile for symbol, or None if no profile file exists.
+
+    None (not an exception) on a missing file: a currency without a curated
+    profile must degrade gracefully in the LLM context rather than crash the
+    decision pipeline -- the same principle the live-price fetch (added
+    later in this module) also follows.
+    """
+    path = profiles_dir / f"{symbol}.yaml"
+    if not path.exists():
+        return None
+    return load_yaml_as(path, CurrencyProfile)
+
+
+def build_polygon_client(api_key: str, transport: httpx.BaseTransport | None = None) -> httpx.Client:
+    return httpx.Client(base_url=POLYGON_BASE_URL, params={"apiKey": api_key}, transport=transport, timeout=15.0)
+
+
+class LivePriceSnapshot(BaseModel):
+    ticker: str
+    price: float | None
+    retrieval_timestamp: datetime
+    source: str = "polygon"
+    data_window: str | None = None
+    unavailable_reason: str | None = None
+
+
+def fetch_live_price(ticker: str, client: httpx.Client) -> LivePriceSnapshot:
+    """Fetch a live crypto aggregate price for `ticker` (e.g. "X:USDCUSD").
+
+    Never raises on a data or network problem -- a market-data outage must
+    not crash a negotiation, so failures come back as a snapshot with
+    price=None and unavailable_reason set, not an exception.
+    """
+    now = datetime.now(timezone.utc)
+    try:
+        response = client.get(f"/v2/aggs/ticker/{ticker}/prev")
+        response.raise_for_status()
+        results = response.json().get("results") or []
+        if not results:
+            return LivePriceSnapshot(ticker=ticker, price=None, retrieval_timestamp=now, unavailable_reason="no data returned for this ticker")
+        return LivePriceSnapshot(
+            ticker=ticker, price=results[0]["c"], retrieval_timestamp=now, data_window="previous close"
+        )
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        return LivePriceSnapshot(ticker=ticker, price=None, retrieval_timestamp=now, unavailable_reason=str(exc))

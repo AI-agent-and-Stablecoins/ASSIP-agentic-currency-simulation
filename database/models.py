@@ -9,7 +9,7 @@ tool needs).
 
 from datetime import datetime
 
-from sqlalchemy import Float, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON, DateTime
 
@@ -96,3 +96,56 @@ class MetricRecord(Base):
     metric_name: Mapped[str] = mapped_column(String)
     timestep: Mapped[int] = mapped_column(Integer)
     value: Mapped[float] = mapped_column(Float)
+
+
+class LLMDecisionRecord(Base):
+    """Every LLM decision, whether it came from the primary model, a fallback,
+    or a same-model economic-correction reprompt (see fallback_used /
+    fallback_reason / model_attempts)."""
+
+    __tablename__ = "llm_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    decision_id: Mapped[str] = mapped_column(String)
+    simulation_id: Mapped[str] = mapped_column(String)
+    timestep: Mapped[int] = mapped_column(Integer)
+    agent_id: Mapped[str] = mapped_column(String, ForeignKey("agents.id"))
+    agent_type: Mapped[str] = mapped_column(String)
+    requested_model: Mapped[str] = mapped_column(String)
+    actual_model: Mapped[str] = mapped_column(String)
+    fallback_used: Mapped[bool] = mapped_column(Boolean)
+    fallback_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    model_attempts: Mapped[list] = mapped_column(JSON)
+    prompt_version: Mapped[str] = mapped_column(String)
+    rendered_prompt_hash: Mapped[str] = mapped_column(String)
+    action: Mapped[str] = mapped_column(String)
+    currency: Mapped[str] = mapped_column(String)
+    chain: Mapped[str] = mapped_column(String)
+    amount: Mapped[float] = mapped_column(Float)
+    price: Mapped[float] = mapped_column(Float)
+    reported_reasoning: Mapped[str] = mapped_column(String)
+    negotiation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    round: Mapped[int] = mapped_column(Integer)
+    risk_profile: Mapped[str] = mapped_column(String)
+    utility_type: Mapped[str] = mapped_column(String)
+    utility_parameters: Mapped[dict] = mapped_column(JSON)
+    scenario: Mapped[str] = mapped_column(String)
+    domestic_or_cross_border: Mapped[str] = mapped_column(String)
+    governance_prompt_enabled: Mapped[bool] = mapped_column(Boolean)
+    timestamp: Mapped[datetime] = mapped_column(DateTime)
+
+
+class MarketSnapshotRecord(Base):
+    """A timestamped external market-data fetch (Polygon live price, or the
+    static profile corpus's report_date) shown to an LLM -- persisted so a
+    later re-run can see exactly what data the model was shown."""
+
+    __tablename__ = "market_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    retrieval_timestamp: Mapped[datetime] = mapped_column(DateTime)
+    source: Mapped[str] = mapped_column(String)
+    ticker: Mapped[str] = mapped_column(String)
+    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    data_window: Mapped[str | None] = mapped_column(String, nullable=True)
+    negotiation_id: Mapped[str | None] = mapped_column(String, nullable=True)

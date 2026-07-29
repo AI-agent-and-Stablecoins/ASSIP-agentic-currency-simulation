@@ -8,13 +8,59 @@ callers (e2b/sandbox_launcher.py, scripts, notebooks) wire into that hook.
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 
-from database.models import AgentRecord, MetricRecord, NegotiationRecord, TransactionRecord, WalletRecord
+from database.models import (
+    AgentRecord,
+    LLMDecisionRecord,
+    MarketSnapshotRecord,
+    MetricRecord,
+    NegotiationRecord,
+    TransactionRecord,
+    WalletRecord,
+)
 from src.agents.base_agent import BaseAgent
 from src.negotiation.conversation_history import ConversationLog
 from src.simulation.environment import Environment
 from src.simulation.timestep import TimestepResult
 from src.transactions.transaction import Transaction
+
+
+class LLMDecisionLogEntry(BaseModel):
+    decision_id: str
+    simulation_id: str
+    timestep: int
+    agent_id: str
+    agent_type: str
+    requested_model: str
+    actual_model: str
+    fallback_used: bool
+    fallback_reason: str | None
+    model_attempts: list[str]
+    prompt_version: str
+    rendered_prompt_hash: str
+    action: str
+    currency: str
+    chain: str
+    amount: float
+    price: float
+    reported_reasoning: str
+    negotiation_id: str | None
+    round: int
+    risk_profile: str
+    utility_type: str
+    utility_parameters: dict
+    scenario: str
+    domestic_or_cross_border: str
+    governance_prompt_enabled: bool
+
+
+class MarketSnapshotLogEntry(BaseModel):
+    source: str
+    ticker: str
+    price: float | None
+    data_window: str | None
+    negotiation_id: str | None = None
 
 
 class AgentRepository:
@@ -85,6 +131,32 @@ class MetricsRepository:
     def record(self, scenario_run_id: int, metric_name: str, timestep: int, value: float) -> None:
         self.session.add(
             MetricRecord(scenario_run_id=scenario_run_id, metric_name=metric_name, timestep=timestep, value=value)
+        )
+
+
+class LLMDecisionRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(self, entry: LLMDecisionLogEntry) -> None:
+        self.session.add(
+            LLMDecisionRecord(
+                **entry.model_dump(),
+                timestamp=datetime.now(timezone.utc),
+            )
+        )
+
+
+class MarketSnapshotRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(self, entry: MarketSnapshotLogEntry) -> None:
+        self.session.add(
+            MarketSnapshotRecord(
+                **entry.model_dump(),
+                retrieval_timestamp=datetime.now(timezone.utc),
+            )
         )
 
 

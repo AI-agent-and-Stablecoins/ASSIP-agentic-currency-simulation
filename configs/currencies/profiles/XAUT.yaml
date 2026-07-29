@@ -1,0 +1,40 @@
+symbol: XAUT
+executive_summary: >-
+  XAUT (Tether Gold) is Tether's gold-backed token, launched Aug 2020. Each
+  token represents one fine troy ounce of allocated gold held by Tether
+  (claimed ~140 metric tons / ~$23B by 2026). Trades tracking gold's USD
+  spot price; market cap on the order of $10-12B.
+timeline:
+  - date: "2020-08"
+    event: Tether Gold (XAUT) launched
+  - date: "2020-08-26"
+    event: XAUT listed on Binance
+  - date: "2022-2024"
+    event: Tether continues acquiring gold (140+ tons by mid-2026)
+  - date: "2026-06-27"
+    event: XAUT integrated with Ledn for gold-backed loans
+  - date: "2026-07-21"
+    event: XAUT recognized as an accepted commodity in Abu Dhabi Global Market (ADGM)
+reserves_and_transparency: >-
+  Physical gold bullion in vaults (e.g. Switzerland). Tether claims each
+  XAUT is backed by a specific ounce held, but unlike PAXG, Tether does not
+  publish regular independent external audits for the gold reserve --
+  transparency is lower, relying on Tether's own periodic disclosures.
+governance: >-
+  Centrally managed by Tether Operations Ltd; no DAO or independent trustee
+  for the gold. Mechanics are entirely internal to Tether's operations.
+price_and_market_cap: >-
+  Price tracks gold spot (~$4,100/oz mid-2026). Market cap roughly $10-12B,
+  lower volatility than most crypto but mirrors gold's swings.
+crra_cara_note: "Unused/unspecified."
+use_cases: >-
+  Digital gold custody and transfer, gold-backed lending (e.g. via Ledn),
+  fiat/gold arbitrage without moving physical bullion, DeFi collateral for
+  protocols accepting tokenized gold.
+regulatory_and_controversies: >-
+  Complex/uneven regulatory status; ADGM (Abu Dhabi) acceptance in 2026
+  suggests some jurisdictional approval. No specific enforcement reported,
+  but shares Tether's parent-company scrutiny and counterparty-trust risk in
+  its large gold-holding claims.
+source: deep-research-report.md
+report_date: "2026-07"

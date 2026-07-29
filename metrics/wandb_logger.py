@@ -12,6 +12,7 @@ for database persistence -- no changes needed to simulation_runner.py.
 from typing import Optional
 
 from metrics.chain_selection import chain_usage_share
+from src.llm.hallucination_detector import HallucinationDirection, HallucinationResult
 from metrics.compliance_effects import compliance_adoption_share
 from metrics.currency_usage import market_share
 from metrics.gas_fee_sensitivity import average_gas_fee_paid
@@ -44,6 +45,31 @@ class WandbRunLogger:
                 "wealth_distribution": wealth_distribution_from_agents(env.agents, env.exchange_rates),
             },
             step=result.day,
+        )
+
+    def log_llm_metrics(
+        self,
+        hallucination_results: list[HallucinationResult],
+        model_attempts_by_call: list[list[str]],
+        step: int,
+    ) -> None:
+        """Additive: logs LLM-path-specific metrics alongside whatever the
+        caller already logs via on_timestep(). Only the LLM path calls this;
+        Phase 1 rule-based runs never do."""
+        total = len(hallucination_results)
+        hallucination_rate = (
+            sum(1 for result in hallucination_results if result.direction != HallucinationDirection.ACCURATE) / total
+            if total
+            else 0.0
+        )
+        fallback_rate = (
+            sum(1 for attempts in model_attempts_by_call if len(attempts) > 1) / len(model_attempts_by_call)
+            if model_attempts_by_call
+            else 0.0
+        )
+        self._wandb.log(
+            {"llm_hallucination_rate": hallucination_rate, "llm_fallback_rate": fallback_rate},
+            step=step,
         )
 
     def finish(self) -> None:

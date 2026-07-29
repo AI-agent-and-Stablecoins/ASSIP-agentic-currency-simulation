@@ -1,0 +1,41 @@
+symbol: EURC
+executive_summary: >-
+  EURC is a euro-backed stablecoin issued by Circle, launched June 30 2022 on
+  Ethereum, fully backed 1:1 by held euros/Eurozone assets, redeemable 1:1
+  for EUR. Reserves held at regulated European banks, attested monthly.
+  Expanded to Avalanche, Solana, Base, Cronos, Stellar. Operates under EU
+  MiCA as an Electronic Money Token.
+timeline:
+  - date: "2022-06-30"
+    event: EURC launches on Ethereum
+  - date: "2022-10"
+    event: EURC expands to Avalanche and other chains
+  - date: "2023-09-26"
+    event: EURC launches on Stellar
+  - date: "2024-07"
+    event: Circle obtains French EMI license (MiCA preparation)
+  - date: "2025-11-26"
+    event: Circle publishes MiCA whitepaper for EURC
+reserves_and_transparency: >-
+  Full-reserve model: every EURC backed by one euro or equivalent
+  high-quality euro-denominated assets, held at regulated EU/EEA banks,
+  segregated from operating funds, attested monthly by a Big Four firm
+  (Deloitte). Weekly reserve breakdowns published.
+governance: >-
+  Centrally issued by Circle via its EU subsidiary; Centre Consortium
+  (Circle + Coinbase) wound down Aug 2023, Circle became sole issuer. No
+  on-chain governance; corporate board/management control issuance and
+  redemption policy.
+price_and_market_cap: >-
+  Trades at ~EUR1 (~$1.10-1.15 following EUR/USD). Market cap ~EUR380M
+  (~$436M) as of July 2026.
+crra_cara_note: "Unused/unspecified."
+use_cases: >-
+  Euro liquidity in crypto: FX trading, euro-denominated DeFi lending,
+  cross-border payments, institutional treasury management.
+regulatory_and_controversies: >-
+  Structured explicitly as an EU e-money token (EMT) under MiCA; proactively
+  licensed (French EMI 2024); fully MiCA-compliant by 2026. No known
+  enforcement actions; promoted as regulator-friendly.
+source: deep-research-report.md
+report_date: "2026-07"

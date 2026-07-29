@@ -1,0 +1,41 @@
+symbol: USDT
+executive_summary: >-
+  USDT (Tether USD) is the largest USD-pegged stablecoin by market cap
+  (~$100-130B), launched 2014, issued by Tether Operations Ltd. Pegged 1:1
+  to USD by claim; reserves held off-chain and historically less
+  transparent than USDC's, though composition has shifted toward cash and
+  T-bills in recent years.
+timeline:
+  - date: "2014-10"
+    event: Tether (USDT) launched (initially Bitcoin Omni Layer, later Ethereum, Tron, etc.)
+  - date: "2021-02"
+    event: NYAG settlement -- $18.5M fine, new transparency commitments
+  - date: "2024"
+    event: DOJ investigation into AML compliance reported
+  - date: "2026-03-24"
+    event: Tether announces a Big Four audit of USDT reserves
+reserves_and_transparency: >-
+  Claims 100% backing; historically held commercial paper and funded
+  receivables considered lower-grade, shifted toward cash/T-bills after
+  2022. Publishes daily circulation and periodic (quarterly) attestations;
+  full independent audit was still in progress as of the Mar 2026
+  announcement, so some reserve-composition uncertainty persists.
+governance: >-
+  Centrally governed by Tether Operations Ltd (Hong Kong entity, under
+  Bitfinex ownership); no decentralized governance or token-holder
+  transparency into policy decisions.
+price_and_market_cap: >-
+  Traded within cents of $1 (briefly ~$1.0005 in May 2023 on high demand).
+  Market cap grew from ~$60B (2021) to $100B+ (2024+), ~60% crypto-market
+  stablecoin share.
+crra_cara_note: "Unused/unspecified."
+use_cases: >-
+  De facto on/off-ramp for crypto trading pairs and DeFi worldwide,
+  especially in emerging markets; remittances and off-chain settlement.
+regulatory_and_controversies: >-
+  History of controversy: 2017-2021 allegations of unbacked issuance, 2021
+  NYAG settlement ($18.5M fine, admitted "receivables" in reserves), 2024
+  reports of DOJ AML/sanctions investigation. Widely used but carries
+  ongoing counterparty/transparency risk versus USDC.
+source: deep-research-report.md
+report_date: "2026-07"

@@ -1,0 +1,38 @@
+symbol: FDUSD
+executive_summary: >-
+  First Digital USD (FDUSD) is a USD-backed stablecoin issued by First
+  Digital Trust (Hong Kong), launched 2023 with full-reserve backing.
+  Redeemable 1:1 for USD held in trust custody (cash, short-term US
+  Treasuries, deposits), monthly third-party attestations. Marketed for
+  institutional and cross-border use, especially in Asia.
+timeline:
+  - date: "2023-04-28"
+    event: FDUSD launched on Ethereum
+  - date: "2023-05-02"
+    event: FDUSD launched on BNB Smart Chain
+  - date: "2024-01-31"
+    event: First attestation report (1Q24) reports $2.59B reserves
+  - date: "2023-2025"
+    event: Gradual expansion to Arbitrum, Solana, Sui, TON
+reserves_and_transparency: >-
+  Fully backed by cash and cash equivalents held by a licensed custodian
+  (Legacy Trust Company). Monthly attestations by an independent auditor
+  (Prescient Assurance); a Jan 2024 report showed $2.59B reserves (~59%
+  T-bills, ~22% fixed deposits, ~15% USD cash, ~4% repos).
+governance: >-
+  Centralized under First Digital Trust (HK); trustee and parent group
+  govern issuance/redemption. No DAO or token governance; compliance
+  overseen by the trust board.
+price_and_market_cap: >-
+  Stayed very close to $1 ($0.997-$1.00). Circulating supply reached ~$3B by
+  2026.
+crra_cara_note: "Unused/unspecified."
+use_cases: >-
+  Institutional cross-border payments, remittances, treasury management,
+  DeFi lending/trading integrations, particularly Asia-focused.
+regulatory_and_controversies: >-
+  Compliance-first positioning; regulated as a Hong Kong trust company
+  subject to AML/investor-protection law. No controversies reported;
+  general new-entrant adoption/liquidity risk applies.
+source: deep-research-report.md
+report_date: "2026-07"

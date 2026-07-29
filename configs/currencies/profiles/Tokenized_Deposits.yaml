@@ -1,0 +1,31 @@
+symbol: Tokenized_Deposits
+executive_summary: >-
+  "Tokenized deposits" is a general category: digital tokens representing
+  bank deposits at regulated institutions, pegged 1:1 to fiat and fully
+  reserved by customer deposits/equivalents. Under EU MiCA, most such tokens
+  are classified as electronic money tokens (EMTs) requiring e-money issuer
+  licensing. Unlike algorithmic or crypto-collateralized stablecoins, this
+  category relies on trusted banking relationships.
+timeline: []
+reserves_and_transparency: >-
+  Reserves are exactly equal to the stated deposits, held in bank accounts
+  or regulated funds (cash or T-bills). Transparency is often high (subject
+  to bank audits); under MiCA, monthly attestations are mandated for EMTs.
+governance: >-
+  Centralized under the issuing bank/fintech, governed by banking
+  regulation. Decision-making follows corporate/regulatory frameworks, not
+  on-chain voting.
+price_and_market_cap: >-
+  Category-level: pegged 1:1 to the referenced fiat currency by design; no
+  single price/market-cap series applies across the category.
+crra_cara_note: "None of the surveyed tokens explicitly use CRRA/CARA terms; this category is fully reserved / overcollateralized, with no algorithmic risk-return structure."
+use_cases: >-
+  Digital-form replacement for traditional deposits: payments, tokenized
+  lending, collateral, bridging banking and blockchain rails (e.g. tokenized
+  euro/yen).
+regulatory_and_controversies: >-
+  Typically requires banking or e-money licenses (e.g. Circle's EURC/USDC
+  are EMTs under EU law). Risks include banking-regulation changes,
+  interest-rate risk on bond-held reserves, and general compliance burden.
+source: deep-research-report.md
+report_date: "2026-07"
