@@ -155,3 +155,26 @@ class MarketSnapshotRecord(Base):
     price: Mapped[float | None] = mapped_column(Float, nullable=True)
     data_window: Mapped[str | None] = mapped_column(String, nullable=True)
     negotiation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class SimulationRunRecord(Base):
+    """Provenance metadata captured once per run, before the first timestep.
+
+    model_roster_summary is a short descriptor of the run's agent-to-model
+    assignment (Phase 3 assigns one model per agent, not one per run) rather
+    than a single openrouter_model_id -- see docs/superpowers/plans/
+    2026-07-29-phase3-01-foundation-persistence.md Task 5 for why this
+    deviates from Experiment.md's singular field name.
+    """
+
+    __tablename__ = "simulation_runs"
+
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    scenario_name: Mapped[str] = mapped_column(String)
+    research_mode: Mapped[str] = mapped_column(String)
+    random_seed: Mapped[int] = mapped_column(Integer)
+    model_roster_summary: Mapped[str] = mapped_column(String)
+    prompt_version_hash: Mapped[str] = mapped_column(String)
+    git_commit_hash: Mapped[str] = mapped_column(String)
+    config_hash: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime)

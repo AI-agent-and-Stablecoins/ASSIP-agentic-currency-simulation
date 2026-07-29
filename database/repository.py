@@ -17,6 +17,7 @@ from database.models import (
     MarketSnapshotRecord,
     MetricRecord,
     NegotiationRecord,
+    SimulationRunRecord,
     TransactionRecord,
     WalletRecord,
 )
@@ -75,6 +76,17 @@ class MarketSnapshotLogEntry(BaseModel):
     price: float | None
     data_window: str | None
     negotiation_id: str | None = None
+
+
+class SimulationRunLogEntry(BaseModel):
+    run_id: str
+    scenario_name: str
+    research_mode: str
+    random_seed: int
+    model_roster_summary: str
+    prompt_version_hash: str
+    git_commit_hash: str
+    config_hash: str
 
 
 class AgentRepository:
@@ -181,6 +193,14 @@ class MarketSnapshotRepository:
                 retrieval_timestamp=datetime.now(timezone.utc),
             )
         )
+
+
+class SimulationRunRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(self, entry: SimulationRunLogEntry) -> None:
+        self.session.add(SimulationRunRecord(**entry.model_dump(), created_at=datetime.now(timezone.utc)))
 
 
 def persist_timestep(session: Session, env: Environment, result: TimestepResult) -> None:
