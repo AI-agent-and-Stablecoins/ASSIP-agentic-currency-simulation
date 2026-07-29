@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from database.models import (
     AgentRecord,
+    HallucinationRecord,
     LLMDecisionRecord,
     MarketSnapshotRecord,
     MetricRecord,
@@ -54,6 +55,18 @@ class LLMDecisionLogEntry(BaseModel):
     scenario: str
     domestic_or_cross_border: str
     governance_prompt_enabled: bool
+
+
+class HallucinationLogEntry(BaseModel):
+    decision_id: str | None = None
+    transaction_id: str | None = None
+    expected_price: float
+    paid_price: float
+    overpayment_pct: float
+    direction: str
+    is_hallucination: bool
+    currency_symbol: str
+    model_name: str | None = None
 
 
 class MarketSnapshotLogEntry(BaseModel):
@@ -147,6 +160,14 @@ class LLMDecisionRepository:
                 timestamp=datetime.now(timezone.utc),
             )
         )
+
+
+class HallucinationRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(self, entry: HallucinationLogEntry) -> None:
+        self.session.add(HallucinationRecord(**entry.model_dump()))
 
 
 class MarketSnapshotRepository:

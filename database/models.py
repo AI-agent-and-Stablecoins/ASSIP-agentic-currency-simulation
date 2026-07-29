@@ -66,16 +66,20 @@ class NegotiationRecord(Base):
 
 
 class HallucinationRecord(Base):
-    """Inert in Phase 1 -- populated once Phase 2's LLM decisions produce
-    expected-vs-paid comparisons. Defined now so no migration is needed later."""
+    """Every hallucination check, whether or not it ties to a settled
+    transaction -- detection happens on any LLM decision, and a decision can
+    be rejected/countered long before (or without ever) settling."""
 
     __tablename__ = "hallucinations"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    transaction_id: Mapped[str] = mapped_column(String, ForeignKey("transactions.id"))
+    decision_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    transaction_id: Mapped[str | None] = mapped_column(String, ForeignKey("transactions.id"), nullable=True)
     expected_price: Mapped[float] = mapped_column(Float)
     paid_price: Mapped[float] = mapped_column(Float)
     overpayment_pct: Mapped[float] = mapped_column(Float)
+    direction: Mapped[str] = mapped_column(String)
+    is_hallucination: Mapped[bool] = mapped_column(Boolean)
     currency_symbol: Mapped[str] = mapped_column(String)
     model_name: Mapped[str | None] = mapped_column(String, nullable=True)
 
