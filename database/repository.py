@@ -39,6 +39,7 @@ class LLMDecisionLogEntry(BaseModel):
     model_attempts: list[str]
     prompt_version: str
     rendered_prompt_hash: str
+    system_prompt: str
     action: str
     currency: str
     chain: str

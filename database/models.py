@@ -118,6 +118,7 @@ class LLMDecisionRecord(Base):
     model_attempts: Mapped[list] = mapped_column(JSON)
     prompt_version: Mapped[str] = mapped_column(String)
     rendered_prompt_hash: Mapped[str] = mapped_column(String)
+    system_prompt: Mapped[str] = mapped_column(String)
     action: Mapped[str] = mapped_column(String)
     currency: Mapped[str] = mapped_column(String)
     chain: Mapped[str] = mapped_column(String)

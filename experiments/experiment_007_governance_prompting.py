@@ -129,6 +129,7 @@ def run_cell(
                 model_attempts=[model_id],
                 prompt_version=PROMPT_VERSIONS["buyer"],
                 rendered_prompt_hash=hash_rendered_prompt(prompt),
+                system_prompt=prompt,
                 action=decision.action.value,
                 currency=decision.proposed_currency,
                 chain=decision.proposed_chain,

@@ -32,6 +32,7 @@ def test_llm_decision_repository_persists_full_record():
         model_attempts=["claude-sonnet-5"],
         prompt_version="buyer_prompt@v1",
         rendered_prompt_hash="abc123",
+        system_prompt="You are a buyer agent. Candidates: USDC on ethereum...",
         action="OFFER",
         currency="USDC",
         chain="ethereum",
@@ -57,6 +58,7 @@ def test_llm_decision_repository_persists_full_record():
     assert rows[0].actual_model == "claude-sonnet-5"
     assert rows[0].model_attempts == ["claude-sonnet-5"]
     assert rows[0].fallback_used is False
+    assert rows[0].system_prompt == "You are a buyer agent. Candidates: USDC on ethereum..."
 
 
 def test_market_snapshot_repository_persists_and_allows_missing_price():
