@@ -14,7 +14,7 @@ from database.models import HallucinationRecord
 def hallucination_frequency(session: Session, total_transactions: int) -> float:
     if total_transactions == 0:
         return 0.0
-    hallucination_count = session.query(HallucinationRecord).count()
+    hallucination_count = session.query(HallucinationRecord).filter(HallucinationRecord.is_hallucination == True).count()
     return hallucination_count / total_transactions
 
 
