@@ -105,6 +105,7 @@ class TransactionRepository:
                 paid_value=tx.paid_value,
                 timestep=tx.timestep,
                 status=tx.status.value,
+                fx_tax_paid=tx.fx_tax_paid,
                 timestamp=datetime.now(timezone.utc),
             )
         )

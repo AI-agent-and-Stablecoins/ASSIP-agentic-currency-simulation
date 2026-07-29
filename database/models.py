@@ -51,6 +51,7 @@ class TransactionRecord(Base):
     paid_value: Mapped[float] = mapped_column(Float)
     timestep: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String)
+    fx_tax_paid: Mapped[float] = mapped_column(Float, default=0.0)
     timestamp: Mapped[datetime] = mapped_column(DateTime)
 
 

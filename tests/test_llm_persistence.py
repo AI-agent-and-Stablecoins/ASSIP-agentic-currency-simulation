@@ -1,13 +1,15 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from database.models import Base, LLMDecisionRecord, MarketSnapshotRecord
+from database.models import Base, LLMDecisionRecord, MarketSnapshotRecord, TransactionRecord
 from database.repository import (
     LLMDecisionLogEntry,
     LLMDecisionRepository,
     MarketSnapshotLogEntry,
     MarketSnapshotRepository,
+    TransactionRepository,
 )
+from src.transactions.transaction import Transaction
 
 
 def _session() -> Session:
@@ -73,3 +75,27 @@ def test_market_snapshot_repository_persists_and_allows_missing_price():
     assert len(rows) == 1
     assert rows[0].price is None
     assert rows[0].ticker == "X:USDCUSD"
+
+
+def test_transaction_repository_persists_fx_tax_paid():
+    session = _session()
+    repo = TransactionRepository(session)
+    tx = Transaction(
+        buyer_id="buyer-1",
+        seller_id="seller-1",
+        good_name="cloud_compute",
+        currency_symbol="USDC",
+        chain_name="ethereum",
+        gas_fee=0.5,
+        expected_value=100.0,
+        paid_value=100.0,
+        timestep=0,
+        fx_tax_paid=1.75,
+    )
+
+    repo.record(tx)
+    session.commit()
+
+    rows = session.query(TransactionRecord).all()
+    assert len(rows) == 1
+    assert rows[0].fx_tax_paid == 1.75

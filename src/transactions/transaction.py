@@ -30,3 +30,4 @@ class Transaction(BaseModel):
     paid_value: float
     timestep: int
     status: TransactionStatus = TransactionStatus.PENDING
+    fx_tax_paid: float = 0.0

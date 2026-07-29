@@ -71,3 +71,26 @@ def test_validation_accepts_well_formed_transaction():
     result = validate_transaction(tx, buyer_wallet, currencies)
 
     assert result.is_valid is True
+
+
+def test_transaction_defaults_fx_tax_paid_to_zero():
+    tx = _make_tx()
+
+    assert tx.fx_tax_paid == 0.0
+
+
+def test_transaction_accepts_explicit_fx_tax_paid():
+    tx = Transaction(
+        buyer_id="buyer-1",
+        seller_id="seller-1",
+        good_name="cloud_compute",
+        currency_symbol="USDC",
+        chain_name="ethereum",
+        gas_fee=0.5,
+        expected_value=100.0,
+        paid_value=100.0,
+        timestep=0,
+        fx_tax_paid=2.5,
+    )
+
+    assert tx.fx_tax_paid == 2.5
