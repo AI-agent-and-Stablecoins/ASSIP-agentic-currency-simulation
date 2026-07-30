@@ -40,6 +40,37 @@ def test_build_llm_context_surfaces_multi_attribute_agent_weights():
     assert context.multi_attribute_weights.liquidity_weight == 0.35
 
 
+def test_agent_utility_context_defaults_population_fields_to_none():
+    context = AgentUtilityContext(
+        agent_id="a1",
+        agent_class="buyer",
+        risk_profile="low",
+        utility_type="crra",
+        wallet_balances={"USDC": 1000.0},
+    )
+
+    assert context.currency_zone is None
+    assert context.assigned_model is None
+    assert context.cara_coefficient is None
+
+
+def test_agent_utility_context_accepts_population_fields():
+    context = AgentUtilityContext(
+        agent_id="a1",
+        agent_class="buyer",
+        risk_profile="low",
+        utility_type="crra",
+        wallet_balances={"USDC": 1000.0},
+        currency_zone="EUR",
+        assigned_model="anthropic/claude-sonnet-5",
+        cara_coefficient=1.5,
+    )
+
+    assert context.currency_zone == "EUR"
+    assert context.assigned_model == "anthropic/claude-sonnet-5"
+    assert context.cara_coefficient == 1.5
+
+
 def _option(**overrides) -> CurrencyChainOption:
     defaults = dict(
         currency_symbol="USDC",

@@ -23,6 +23,9 @@ class BaseAgent(BaseModel):
     risk_aversion: float | None = None
     eis: float | None = None
     multi_attribute_weights: MultiAttributeWeights | None = None
+    currency_zone: str | None = None
+    assigned_model: str | None = None
+    cara_coefficient: float | None = None
     memory: AgentMemory = Field(default_factory=AgentMemory)
     preferences: AgentPreferences = Field(default_factory=AgentPreferences)
 
@@ -46,4 +49,7 @@ class BaseAgent(BaseModel):
             eis=self.eis,
             multi_attribute_weights=self.multi_attribute_weights,
             wallet_balances=dict(self.wallet.balances),
+            currency_zone=self.currency_zone,
+            assigned_model=self.assigned_model,
+            cara_coefficient=self.cara_coefficient,
         )

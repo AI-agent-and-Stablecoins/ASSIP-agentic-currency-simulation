@@ -62,6 +62,9 @@ class AgentUtilityContext(BaseModel):
     eis: float | None = None
     multi_attribute_weights: MultiAttributeWeights | None = None
     wallet_balances: dict[str, float] = {}
+    currency_zone: str | None = None
+    assigned_model: str | None = None
+    cara_coefficient: float | None = None
 
 
 class TransactionContext(BaseModel):
