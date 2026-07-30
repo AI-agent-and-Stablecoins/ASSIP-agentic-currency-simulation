@@ -2,7 +2,9 @@ import random
 
 import pytest
 
+from src.blockchain.routing_engine import generate_candidates
 from src.economy.shocks import ShockEvent, ShockType
+from src.economy.trust import TrustLedger
 from src.simulation.environment import Environment
 from src.simulation.event_queue import EventQueue
 from src.simulation.simulation_runner import SimulationConfig, SimulationRunner
@@ -96,3 +98,57 @@ def test_run_timestep_records_narrative_memory_for_agents_holding_a_shocked_curr
     assert matching[0][1] == "Depeg"
     assert "USDT" in matching[0][2]
     assert matching[0][2] in consumer.memory.narrative_events
+
+
+def test_environment_build_constructs_a_trust_ledger():
+    env = Environment.build("baseline", {"consumer": 2, "merchant": 2})
+
+    assert isinstance(env.trust_ledger, TrustLedger)
+    # Sanity: it should be initialized from the same currencies the
+    # environment holds, not some detached default instance.
+    for symbol in env.currencies:
+        assert env.trust_ledger.trust_score(symbol) == pytest.approx(env.currencies[symbol].governance_score)
+
+
+def test_run_timestep_advances_trust_ledger_so_depeg_offset_decays_across_days():
+    """The review's core finding: TrustLedger must actually be driven by the
+    real simulation loop (run_timestep), not just be constructible/callable
+    in isolation. A depeg_event on day 0 should spike USDT's peg_error
+    offset via env.trust_ledger; subsequent quiet days should decay that
+    offset -- and generate_candidates() called through the production path
+    (i.e. via env.trust_ledger) must reflect a shrinking, non-static
+    peg_error day over day.
+    """
+    env = _build_env_with_shocks(
+        [ShockEvent(day=0, type=ShockType.DEPEG_EVENT, magnitude=0.08, target_currency="USDT")],
+        {"consumer": 2, "merchant": 2},
+    )
+    rng = random.Random(0)
+
+    run_timestep(env, day=0, rng=rng)
+    day0_offset = env.trust_ledger.peg_error_offset("USDT")
+    day0_effective = env.trust_ledger.effective_peg_error("USDT", env.currencies["USDT"].peg_error)
+    assert day0_offset == pytest.approx(0.08)
+
+    run_timestep(env, day=1, rng=rng)
+    day1_offset = env.trust_ledger.peg_error_offset("USDT")
+    day1_effective = env.trust_ledger.effective_peg_error("USDT", env.currencies["USDT"].peg_error)
+
+    # The production call site of generate_candidates (inside run_timestep)
+    # is wired to the same ledger: re-deriving candidates directly with
+    # env.currencies/env.chains/env.trust_ledger, at this point in time,
+    # reproduces the same shrinking peg_error the loop itself is using.
+    candidates_day1 = generate_candidates(
+        {"USDT": 1.0}, env.currencies, env.chains, env.liquidity_pools, trust_ledger=env.trust_ledger
+    )
+    usdt_candidate = next(c for c in candidates_day1 if c.currency_symbol == "USDT")
+    assert usdt_candidate.peg_error == pytest.approx(day1_effective)
+
+    run_timestep(env, day=2, rng=rng)
+    day2_offset = env.trust_ledger.peg_error_offset("USDT")
+
+    # Present but shrinking -- proves the ledger is being genuinely advanced
+    # once per day by run_timestep, not left static/dead.
+    assert 0.0 < day1_offset < day0_offset
+    assert 0.0 < day2_offset < day1_offset
+    assert day1_effective < day0_effective

@@ -1,7 +1,7 @@
 import pytest
 
 from src.currencies.currency import load_currency_universe
-from src.economy.shocks import ShockEvent, ShockType
+from src.economy.shocks import ShockEvent, ShockType, apply_currency_shock
 from src.economy.trust import TrustLedger, TrustParams, load_trust_params
 from src.utils.helpers import clamp
 
@@ -89,3 +89,36 @@ def test_currencies_untouched_by_offset_shocks_have_zero_offset():
 
     assert ledger.peg_error_offset("USDC") == 0.0
     assert ledger.liquidity_offset("USDC") == 0.0
+
+
+def test_update_with_currencies_refreshes_stale_governance_baseline_after_permanent_downgrade():
+    """A governance_downgrade shock permanently lowers governance_score via
+    apply_currency_shock. Once TrustLedger.update() is passed the updated
+    currencies dict, quiet-day recovery must converge toward the NEW (lower)
+    baseline, not the stale original one -- otherwise a "permanent" downgrade
+    would silently self-heal through the trust channel.
+    """
+    currencies = load_currency_universe()
+    params = _params()
+    ledger = TrustLedger(currencies, params)
+    original_baseline = currencies["USDT"].governance_score
+
+    shock = ShockEvent(day=0, type=ShockType.GOVERNANCE_DOWNGRADE, magnitude=0.3, target_currency="USDT")
+    updated_currencies = apply_currency_shock(currencies, shock)
+    new_baseline = updated_currencies["USDT"].governance_score
+    assert new_baseline < original_baseline
+
+    # The downgrade itself is a structural mutation, not a trust-shock event
+    # in the fired_shocks sense for this test -- we drive many quiet days
+    # (empty fired_shocks) with the updated currencies to isolate the
+    # recovery-baseline behavior.
+    for _ in range(500):
+        ledger.update([], currencies=updated_currencies)
+
+    recovered = ledger.trust_score("USDT")
+
+    # With the fix, trust_score converges toward new_baseline and never
+    # exceeds it (even after many quiet days). Without the fix it would
+    # drift back up toward the stale, higher original_baseline.
+    assert recovered == pytest.approx(new_baseline, abs=1e-6)
+    assert recovered < original_baseline

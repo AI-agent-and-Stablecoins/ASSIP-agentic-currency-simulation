@@ -72,7 +72,19 @@ class TrustLedger:
     def effective_liquidity_score(self, symbol: str, baseline: float) -> float:
         return clamp(baseline + self.liquidity_offset(symbol), 0.0, 1.0)
 
-    def update(self, fired_shocks: list[ShockEvent]) -> None:
+    def update(
+        self,
+        fired_shocks: list[ShockEvent],
+        currencies: dict[str, CurrencyConfig] | None = None,
+    ) -> None:
+        if currencies is not None:
+            # A permanent structural mutation (e.g. governance_downgrade via
+            # apply_currency_shock) must be reflected in the recovery
+            # baseline immediately, or a currency would "self-heal" on quiet
+            # days back toward its stale, higher original governance_score.
+            for symbol, cfg in currencies.items():
+                self._baseline_governance[symbol] = cfg.governance_score
+
         severity_by_currency: dict[str, float] = {}
         peg_shock_by_currency: dict[str, float] = {}
         liquidity_shock_by_currency: dict[str, float] = {}

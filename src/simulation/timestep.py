@@ -54,6 +54,11 @@ def run_timestep(
         env.currencies = apply_currency_shock(env.currencies, shock)
     env.refresh_exchange_rates()
 
+    # Advance trust/peg/liquidity dynamics once per day, regardless of
+    # whether any shock fired today (a quiet day is a valid input that
+    # still drives recovery toward baseline).
+    env.trust_ledger.update(due_shocks, env.currencies)
+
     result = TimestepResult(day=day, fired_shocks=due_shocks)
 
     for shock in due_shocks:
@@ -93,7 +98,13 @@ def run_timestep(
             seller = env.agents[listing.seller_id]
 
             # Steps 5, 7-8: compute utility, choose currency and blockchain.
-            candidates = generate_candidates(buyer.wallet.balances, env.currencies, env.chains, env.liquidity_pools)
+            candidates = generate_candidates(
+                buyer.wallet.balances,
+                env.currencies,
+                env.chains,
+                env.liquidity_pools,
+                trust_ledger=env.trust_ledger,
+            )
             if not candidates:
                 continue
             chosen = buyer.choose_currency_and_chain(candidates)

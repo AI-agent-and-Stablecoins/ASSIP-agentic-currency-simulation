@@ -11,6 +11,7 @@ from src.blockchain.liquidity_pools import LiquidityPoolRegistry
 from src.currencies.currency import CurrencyConfig, load_currency_universe
 from src.currencies.exchange_rates import ExchangeRateTable
 from src.economy.shocks import ScenarioConfig, load_scenario
+from src.economy.trust import TrustLedger, load_trust_params
 from src.market.goods import Good
 from src.market.marketplace import Marketplace
 from src.simulation.event_queue import EventQueue
@@ -34,6 +35,7 @@ class Environment:
         goods: list[Good] | None = None,
     ):
         self.currencies = currencies
+        self.trust_ledger = TrustLedger(currencies, load_trust_params())
         self.chains = chains
         self.scenario = scenario
         self.macro_state = scenario.initial_state.model_copy(deep=True)
