@@ -2,35 +2,21 @@ import random
 
 import pytest
 
-from src.agents.agent_factory import build_agent, load_agent_profiles
-from src.blockchain.chain import load_chain_universe
-from src.currencies.currency import load_currency_universe
-from src.economy.shocks import ShockEvent, ShockType, load_scenario
+from src.economy.shocks import ShockEvent, ShockType
 from src.simulation.environment import Environment
+from src.simulation.event_queue import EventQueue
 from src.simulation.simulation_runner import SimulationConfig, SimulationRunner
 from src.simulation.timestep import run_timestep
 from src.transactions.transaction import TransactionStatus
 
 
 def _build_env_with_shocks(shocks: list[ShockEvent], agent_mix: dict[str, int]) -> Environment:
-    """Environment.build has no way to inject extra shocks, and EventQueue
-    only exposes pop_due (populated from ScenarioConfig.shocks at
-    construction) -- there is no schedule()/add() method to append a shock
-    after the fact. So tests that need a shock to fire construct the
-    Environment directly with a ScenarioConfig whose shocks list already
-    includes it, mirroring Environment.build's own body.
+    """Build an Environment with custom shocks by reusing Environment.build
+    and reassigning its event_queue with the given shocks.
     """
-    currencies = load_currency_universe()
-    chains = load_chain_universe()
-    scenario = load_scenario("baseline").model_copy(update={"shocks": shocks})
-
-    profiles = load_agent_profiles()
-    agents = []
-    for profile_name, count in agent_mix.items():
-        profile = profiles[profile_name]
-        agents.extend(build_agent(profile) for _ in range(count))
-
-    return Environment(currencies=currencies, chains=chains, scenario=scenario, agents=agents)
+    env = Environment.build("baseline", agent_mix)
+    env.event_queue = EventQueue(shocks)
+    return env
 
 
 def test_simulation_runs_end_to_end_without_errors():
