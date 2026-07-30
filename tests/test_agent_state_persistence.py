@@ -34,6 +34,27 @@ def test_agent_state_repository_persists_full_wallet_snapshot():
     assert rows[0].cara_coefficient == 1.5
 
 
+def test_agent_state_repository_persists_none_cara_coefficient_for_multi_attribute_agents():
+    session = _session()
+    repo = AgentStateRepository(session)
+    entry = AgentStateLogEntry(
+        run_id="run-a",
+        timestep=1,
+        agent_id="merchant-1",
+        risk_profile="medium",
+        cara_coefficient=None,
+        real_purchasing_power=2000.0,
+        wallet_balances={"USDC": 2000.0},
+        utility_score=0.8,
+    )
+
+    repo.record(entry)
+    session.commit()
+
+    row = session.query(AgentStateRecord).filter_by(agent_id="merchant-1").one()
+    assert row.cara_coefficient is None
+
+
 def test_agent_state_primary_key_is_run_timestep_agent():
     session = _session()
     repo = AgentStateRepository(session)

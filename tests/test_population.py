@@ -106,6 +106,21 @@ def test_different_seeds_produce_different_populations():
     zones_b = [a.currency_zone for a in population_b]
     assert zones_a != zones_b
 
+    ids_a = [a.agent_id for a in population_a]
+    ids_b = [a.agent_id for a in population_b]
+    assert ids_a != ids_b
+
+
+def test_agent_id_is_reproducible_across_calls_with_same_seed():
+    population_a = generate_agent_population(seed=7, model_candidates=CANDIDATE_MODELS)
+    population_b = generate_agent_population(seed=7, model_candidates=CANDIDATE_MODELS)
+
+    ids_a = [a.agent_id for a in population_a]
+    ids_b = [a.agent_id for a in population_b]
+
+    assert ids_a == ids_b
+    assert len(set(ids_a)) == 100  # all unique within one population
+
 
 def test_empty_model_candidates_raises_loudly():
     with pytest.raises(ValueError):

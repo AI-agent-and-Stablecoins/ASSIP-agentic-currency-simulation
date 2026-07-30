@@ -56,6 +56,7 @@ def build_agent(
     currency_zone: str | None = None,
     assigned_model: str | None = None,
     cara_override: tuple[str, float | None] | None = None,
+    agent_id: str | None = None,
 ) -> BaseAgent:
     agent_cls = _AGENT_CLASSES[profile.agent_class]
 
@@ -69,7 +70,7 @@ def build_agent(
     utility_fn = build_utility_function(utility_type, risk_aversion, profile.weights, profile.eis)
     wallet = Wallet(balances=dict(profile.initial_wallet))
     return agent_cls(
-        agent_id=generate_id(profile.agent_class),
+        agent_id=agent_id if agent_id is not None else generate_id(profile.agent_class),
         agent_class=profile.agent_class,
         profile_name=profile.name,
         risk_profile=profile.risk_tolerance,

@@ -117,7 +117,7 @@ class AgentStateLogEntry(BaseModel):
     timestep: int
     agent_id: str
     risk_profile: str
-    cara_coefficient: float
+    cara_coefficient: float | None = None
     real_purchasing_power: float
     wallet_balances: dict[str, float]
     utility_score: float

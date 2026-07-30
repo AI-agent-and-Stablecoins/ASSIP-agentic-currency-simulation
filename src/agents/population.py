@@ -50,11 +50,13 @@ def generate_agent_population(seed: int, model_candidates: list[str]) -> list[Ba
                 cara_override = ("risk_neutral", None) if a == 0.0 else ("cara", a)
 
             assigned_model = shuffled_models[slot_index % len(shuffled_models)]
+            deterministic_id = f"{profile_name}-seed{seed}-{slot_index:03d}"
             agent = build_agent(
                 profile,
                 currency_zone=zones[slot_index],
                 assigned_model=assigned_model,
                 cara_override=cara_override,
+                agent_id=deterministic_id,
             )
             population.append(agent)
             slot_index += 1
