@@ -31,10 +31,15 @@ class ShockType(str, Enum):
 class ShockEvent(BaseModel):
     day: int
     type: ShockType
-    magnitude: float
+    magnitude: float = Field(ge=0.0)
     target_currency: str | None = None
     target_issuer: str | None = None
     decay_days: int | None = None
+    """Currently informational only -- TrustLedger's offset channels decay
+    via the single global TrustParams.lambda_recover formula (design spec
+    Sec 3.2's deliberate choice over a second, per-shock decay mechanism),
+    not this field. Reserved for a future per-shock override if one is
+    ever added."""
 
 
 class ScenarioConfig(BaseModel):

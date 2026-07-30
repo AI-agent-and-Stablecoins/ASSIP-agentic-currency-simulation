@@ -91,6 +91,21 @@ def test_currencies_untouched_by_offset_shocks_have_zero_offset():
     assert ledger.liquidity_offset("USDC") == 0.0
 
 
+def test_history_with_zero_days_returns_empty_list_not_everything():
+    """trust_history[-days:] with days=0 slices as [0:], returning the full
+    list -- a caller computing a window size that can reach 0 (e.g.
+    min(30, day) on day 0) must get an empty window, not the whole series.
+    """
+    currencies = load_currency_universe()
+    ledger = TrustLedger(currencies, _params())
+
+    ledger.update([ShockEvent(day=0, type=ShockType.DEPEG_EVENT, magnitude=0.08, target_currency="USDT")])
+    ledger.update([])
+
+    assert len(ledger.history("USDT", 30)) > 0  # sanity: history is populated
+    assert ledger.history("USDT", 0) == []
+
+
 def test_update_with_currencies_refreshes_stale_governance_baseline_after_permanent_downgrade():
     """A governance_downgrade shock permanently lowers governance_score via
     apply_currency_shock. Once TrustLedger.update() is passed the updated

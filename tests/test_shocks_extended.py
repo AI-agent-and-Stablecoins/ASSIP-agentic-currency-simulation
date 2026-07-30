@@ -1,3 +1,4 @@
+import pydantic
 import pytest
 
 from src.currencies.currency import load_currency_universe
@@ -20,6 +21,17 @@ def test_shock_event_accepts_target_currency_and_issuer():
     assert shock.target_currency == "USDT"
     assert shock.target_issuer is None
     assert shock.decay_days is None
+
+
+def test_shock_event_rejects_negative_magnitude():
+    """A negative magnitude gets floored to 0.0 severity for trust_score
+    (via max(existing, 0.0) clamping in trust.py) but flows through
+    unclamped into peg_shock_by_currency/liquidity_shock_by_currency
+    accumulation in TrustLedger.update, pinning an offset at an extreme
+    value for weeks. Construction should fail loudly instead.
+    """
+    with pytest.raises(pydantic.ValidationError):
+        ShockEvent(day=0, type=ShockType.DEPEG_EVENT, magnitude=-0.5, target_currency="USDT")
 
 
 def test_governance_downgrade_permanently_lowers_governance_score():

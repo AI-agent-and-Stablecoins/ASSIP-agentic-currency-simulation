@@ -54,11 +54,16 @@ class TrustLedger:
             for symbol, cfg in currencies.items()
         }
 
+    # NOTE: trust_score/history() have no production consumer as of Phase 3
+    # Plan 2 -- they are exercised only by tests. Plan 3/4 (agent population
+    # + matrix runner) is expected to construct CurrencyHistory/MacroHistory
+    # from these. This is an intentional, recorded hand-off, not dead code
+    # left by oversight.
     def trust_score(self, symbol: str) -> float:
         return self._state[symbol].trust_score
 
     def history(self, symbol: str, days: int) -> list[float]:
-        return self._state[symbol].trust_history[-days:]
+        return self._state[symbol].trust_history[-days:] if days > 0 else []
 
     def peg_error_offset(self, symbol: str) -> float:
         return self._state[symbol].peg_error_offset
