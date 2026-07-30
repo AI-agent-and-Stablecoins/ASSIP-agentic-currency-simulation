@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from database.models import (
     AgentRecord,
+    AgentStateRecord,
     HallucinationRecord,
     InterventionLogRecord,
     LLMDecisionRecord,
@@ -110,12 +111,31 @@ class TimestepLogEntry(BaseModel):
     eur_usd_exchange_rate: float
 
 
+class AgentStateLogEntry(BaseModel):
+    run_id: str
+    timestep: int
+    agent_id: str
+    risk_profile: str
+    crra_sigma: float
+    real_purchasing_power: float
+    wallet_balances: dict[str, float]
+    utility_score: float
+
+
 class TimestepLogRepository:
     def __init__(self, session: Session):
         self.session = session
 
     def record(self, entry: TimestepLogEntry) -> None:
         self.session.add(TimestepLogRecord(**entry.model_dump()))
+
+
+class AgentStateRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(self, entry: AgentStateLogEntry) -> None:
+        self.session.add(AgentStateRecord(**entry.model_dump()))
 
 
 class AgentRepository:

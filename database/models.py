@@ -202,3 +202,23 @@ class TimestepLogRecord(Base):
     eth_gas_fee_gwei: Mapped[float] = mapped_column(Float)
     solana_gas_fee_usd: Mapped[float] = mapped_column(Float)
     eur_usd_exchange_rate: Mapped[float] = mapped_column(Float)
+
+
+class AgentStateRecord(Base):
+    """Per-agent-per-day snapshot. wallet_balances is a JSON dict keyed by
+    currency symbol rather than Experiment.md's fixed usd_balance/
+    eur_balance/gold_balance columns -- this codebase's currency universe
+    has nine currencies, not three, and a fixed schema would silently drop
+    six of them. See docs/superpowers/plans/
+    2026-07-29-phase3-01-foundation-persistence.md Task 8."""
+
+    __tablename__ = "agent_states"
+
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("simulation_runs.run_id"), primary_key=True)
+    timestep: Mapped[int] = mapped_column(Integer, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String, ForeignKey("agents.id"), primary_key=True)
+    risk_profile: Mapped[str] = mapped_column(String)
+    crra_sigma: Mapped[float] = mapped_column(Float)
+    real_purchasing_power: Mapped[float] = mapped_column(Float)
+    wallet_balances: Mapped[dict] = mapped_column(JSON)
+    utility_score: Mapped[float] = mapped_column(Float)
