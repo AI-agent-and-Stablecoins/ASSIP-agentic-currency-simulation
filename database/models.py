@@ -218,7 +218,7 @@ class AgentStateRecord(Base):
     timestep: Mapped[int] = mapped_column(Integer, primary_key=True)
     agent_id: Mapped[str] = mapped_column(String, ForeignKey("agents.id"), primary_key=True)
     risk_profile: Mapped[str] = mapped_column(String)
-    crra_sigma: Mapped[float] = mapped_column(Float)
+    cara_coefficient: Mapped[float] = mapped_column(Float)
     real_purchasing_power: Mapped[float] = mapped_column(Float)
     wallet_balances: Mapped[dict] = mapped_column(JSON)
     utility_score: Mapped[float] = mapped_column(Float)

@@ -19,7 +19,7 @@ def test_agent_state_repository_persists_full_wallet_snapshot():
         timestep=10,
         agent_id="buyer-1",
         risk_profile="low",
-        crra_sigma=1.5,
+        cara_coefficient=1.5,
         real_purchasing_power=987.3,
         wallet_balances={"USDC": 800.0, "EURC": 200.0, "PAXG": 1.5},
         utility_score=0.72,
@@ -31,7 +31,7 @@ def test_agent_state_repository_persists_full_wallet_snapshot():
     rows = session.query(AgentStateRecord).all()
     assert len(rows) == 1
     assert rows[0].wallet_balances == {"USDC": 800.0, "EURC": 200.0, "PAXG": 1.5}
-    assert rows[0].crra_sigma == 1.5
+    assert rows[0].cara_coefficient == 1.5
 
 
 def test_agent_state_primary_key_is_run_timestep_agent():
@@ -43,7 +43,7 @@ def test_agent_state_primary_key_is_run_timestep_agent():
             timestep=1,
             agent_id="buyer-1",
             risk_profile="low",
-            crra_sigma=0.0,
+            cara_coefficient=0.0,
             real_purchasing_power=1000.0,
             wallet_balances={"USDC": 1000.0},
             utility_score=1.0,
@@ -55,7 +55,7 @@ def test_agent_state_primary_key_is_run_timestep_agent():
             timestep=2,
             agent_id="buyer-1",
             risk_profile="low",
-            crra_sigma=0.0,
+            cara_coefficient=0.0,
             real_purchasing_power=990.0,
             wallet_balances={"USDC": 990.0},
             utility_score=0.99,
