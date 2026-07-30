@@ -21,6 +21,7 @@ from src.utils.config_loader import load_yaml_as
 from src.utils.constants import CONFIG_ROOT
 
 MODELS_CONFIG_PATH = CONFIG_ROOT / "llm" / "models.yaml"
+MODEL_ROSTER_FULL_PATH = CONFIG_ROOT / "llm" / "model_roster_full.yaml"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
@@ -76,6 +77,35 @@ def verify_model_roster(roster: ModelRosterConfig, client: httpx.Client) -> None
     for entry in roster.models:
         if entry.id not in available_ids:
             raise ModelNotAvailableError(entry.label, entry.id, "not present in OpenRouter's /models response")
+
+
+class ModelCandidate(BaseModel):
+    id: str
+    label: str
+    name: str
+
+
+class ModelCandidateRoster(BaseModel):
+    models: list[ModelCandidate]
+
+
+def load_model_candidate_roster(path: Path = MODEL_ROSTER_FULL_PATH) -> ModelCandidateRoster:
+    return load_yaml_as(path, ModelCandidateRoster)
+
+
+def verify_model_candidates(candidate_ids: list[str], client: httpx.Client) -> tuple[list[str], list[str]]:
+    """Preflight check for a large candidate pool: unlike verify_model_roster
+    (which raises on the first missing model, correct for Phase 2's small
+    fixed roster), this collects every result and returns
+    (available, unavailable) so the caller can exclude failures and report
+    them, rather than aborting entirely on one stale ID."""
+    response = client.get("/models")
+    response.raise_for_status()
+    available_ids = {entry["id"] for entry in response.json()["data"]}
+
+    available = [candidate_id for candidate_id in candidate_ids if candidate_id in available_ids]
+    unavailable = [candidate_id for candidate_id in candidate_ids if candidate_id not in available_ids]
+    return available, unavailable
 
 
 _TECHNICAL_RETRY_STATUS_CODES = {429, 500, 502, 503}

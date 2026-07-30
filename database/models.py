@@ -25,6 +25,9 @@ class AgentRecord(Base):
     agent_class: Mapped[str] = mapped_column(String)
     profile_name: Mapped[str] = mapped_column(String)
     risk_profile: Mapped[str] = mapped_column(String)
+    currency_zone: Mapped[str | None] = mapped_column(String, nullable=True)
+    assigned_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    cara_coefficient: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime)
 
 
@@ -218,7 +221,7 @@ class AgentStateRecord(Base):
     timestep: Mapped[int] = mapped_column(Integer, primary_key=True)
     agent_id: Mapped[str] = mapped_column(String, ForeignKey("agents.id"), primary_key=True)
     risk_profile: Mapped[str] = mapped_column(String)
-    cara_coefficient: Mapped[float] = mapped_column(Float)
+    cara_coefficient: Mapped[float | None] = mapped_column(Float, nullable=True)
     real_purchasing_power: Mapped[float] = mapped_column(Float)
     wallet_balances: Mapped[dict] = mapped_column(JSON)
     utility_score: Mapped[float] = mapped_column(Float)

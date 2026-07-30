@@ -117,7 +117,7 @@ class AgentStateLogEntry(BaseModel):
     timestep: int
     agent_id: str
     risk_profile: str
-    cara_coefficient: float
+    cara_coefficient: float | None = None
     real_purchasing_power: float
     wallet_balances: dict[str, float]
     utility_score: float
@@ -167,6 +167,9 @@ class AgentRepository:
                 agent_class=agent.agent_class,
                 profile_name=agent.profile_name,
                 risk_profile=agent.risk_profile,
+                currency_zone=agent.currency_zone,
+                assigned_model=agent.assigned_model,
+                cara_coefficient=agent.cara_coefficient,
                 created_at=datetime.now(timezone.utc),
             )
             self.session.add(record)

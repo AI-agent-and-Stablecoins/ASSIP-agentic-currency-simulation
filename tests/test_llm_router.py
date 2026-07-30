@@ -254,3 +254,57 @@ def test_fallback_chain_rejects_empty_model_list():
 
     with pytest.raises(ValueError):
         call_with_fallback_chain("prompt", [], client)
+
+
+def test_loads_full_model_candidate_roster():
+    from src.llm.llm_router import load_model_candidate_roster
+
+    roster = load_model_candidate_roster()
+    assert len(roster.models) == 99
+    ids = [entry.id for entry in roster.models]
+    assert len(set(ids)) == 99  # all unique
+    labels = [entry.label for entry in roster.models]
+    assert len(set(labels)) == 99  # all unique
+    assert any(entry.name == "GPT-5" for entry in roster.models)
+    assert any(entry.name == "WizardLM" for entry in roster.models)
+
+
+def test_verify_model_candidates_returns_all_available():
+    from src.llm.llm_router import verify_model_candidates, load_model_candidate_roster
+
+    roster = load_model_candidate_roster()
+    all_ids = [entry.id for entry in roster.models]
+    client = _client_with_models(all_ids)
+
+    available, unavailable = verify_model_candidates(all_ids, client)
+
+    assert set(available) == set(all_ids)
+    assert unavailable == []
+
+
+def test_verify_model_candidates_collects_all_failures_without_raising():
+    from src.llm.llm_router import verify_model_candidates, load_model_candidate_roster
+
+    roster = load_model_candidate_roster()
+    all_ids = [entry.id for entry in roster.models]
+    # Simulate 3 stale/deprecated IDs missing from OpenRouter's live roster.
+    missing = {all_ids[0], all_ids[1], all_ids[2]}
+    present_ids = [i for i in all_ids if i not in missing]
+    client = _client_with_models(present_ids)
+
+    available, unavailable = verify_model_candidates(all_ids, client)
+
+    assert set(unavailable) == missing
+    assert set(available) == set(present_ids)
+    assert len(available) + len(unavailable) == len(all_ids)
+
+
+def test_verify_model_candidates_preserves_input_order_in_available():
+    from src.llm.llm_router import verify_model_candidates
+
+    client = _client_with_models(["b", "a", "c"])
+
+    available, unavailable = verify_model_candidates(["a", "b", "c"], client)
+
+    assert available == ["a", "b", "c"]
+    assert unavailable == []

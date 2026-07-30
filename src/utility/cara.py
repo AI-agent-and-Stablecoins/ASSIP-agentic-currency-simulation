@@ -8,6 +8,7 @@ import math
 
 from src.blockchain.routing_engine import CurrencyChainOption
 from src.utility.base import UtilityFunction
+from src.utils.helpers import clamp
 
 
 class CARAUtility(UtilityFunction):
@@ -20,4 +21,5 @@ class CARAUtility(UtilityFunction):
         safety_multiplier = option.governance_score * option.liquidity_score * (1.0 - option.peg_error)
         effective_wealth = wealth * safety_multiplier - option.gas_fee
         a = self.risk_aversion
-        return -math.exp(-a * effective_wealth) / a
+        exponent = clamp(-a * effective_wealth, -700.0, 700.0)
+        return -math.exp(exponent) / a
