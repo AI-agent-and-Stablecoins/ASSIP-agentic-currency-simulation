@@ -50,9 +50,23 @@ def load_agent_profiles(config_dir: Path = CONFIG_ROOT / "agent_profiles") -> di
     return load_yaml_dir_as(config_dir, AgentProfileConfig)
 
 
-def build_agent(profile: AgentProfileConfig) -> BaseAgent:
+def build_agent(
+    profile: AgentProfileConfig,
+    *,
+    currency_zone: str | None = None,
+    assigned_model: str | None = None,
+    cara_override: tuple[str, float | None] | None = None,
+) -> BaseAgent:
     agent_cls = _AGENT_CLASSES[profile.agent_class]
-    utility_fn = build_utility_function(profile.utility_type, profile.risk_aversion, profile.weights, profile.eis)
+
+    if cara_override is not None:
+        utility_type, risk_aversion = cara_override
+        nominal_cara = risk_aversion if risk_aversion is not None else 0.0
+    else:
+        utility_type, risk_aversion = profile.utility_type, profile.risk_aversion
+        nominal_cara = None
+
+    utility_fn = build_utility_function(utility_type, risk_aversion, profile.weights, profile.eis)
     wallet = Wallet(balances=dict(profile.initial_wallet))
     return agent_cls(
         agent_id=generate_id(profile.agent_class),
@@ -61,8 +75,11 @@ def build_agent(profile: AgentProfileConfig) -> BaseAgent:
         risk_profile=profile.risk_tolerance,
         wallet=wallet,
         utility_fn=utility_fn,
-        utility_type=profile.utility_type,
-        risk_aversion=profile.risk_aversion,
+        utility_type=utility_type,
+        risk_aversion=risk_aversion,
         eis=profile.eis,
         multi_attribute_weights=profile.weights,
+        currency_zone=currency_zone,
+        assigned_model=assigned_model,
+        cara_coefficient=nominal_cara,
     )

@@ -3,6 +3,8 @@ from src.agents.memory import AgentMemory
 from src.blockchain.chain import load_chain_universe
 from src.blockchain.routing_engine import generate_candidates
 from src.currencies.currency import load_currency_universe
+from src.utility.cara import CARAUtility
+from src.utility.risk_neutral import RiskNeutralUtility
 
 
 def test_agent_only_selects_known_currencies_and_chains():
@@ -100,3 +102,45 @@ def test_build_llm_context_defaults_population_fields_to_none():
     assert context.currency_zone is None
     assert context.assigned_model is None
     assert context.cara_coefficient is None
+
+
+def test_build_agent_with_no_overrides_behaves_exactly_as_before():
+    profile = load_agent_profiles()["consumer"]
+
+    agent = build_agent(profile)
+
+    assert agent.currency_zone is None
+    assert agent.assigned_model is None
+    assert agent.cara_coefficient is None
+    assert agent.utility_type == profile.utility_type
+    assert agent.risk_aversion == profile.risk_aversion
+
+
+def test_build_agent_accepts_currency_zone_and_assigned_model():
+    profile = load_agent_profiles()["consumer"]
+
+    agent = build_agent(profile, currency_zone="EUR", assigned_model="openai/gpt-5")
+
+    assert agent.currency_zone == "EUR"
+    assert agent.assigned_model == "openai/gpt-5"
+
+
+def test_build_agent_cara_override_supersedes_profile_utility():
+    profile = load_agent_profiles()["consumer"]  # profile.utility_type == "crra"
+
+    agent = build_agent(profile, cara_override=("cara", 1.5))
+
+    assert agent.utility_type == "cara"
+    assert agent.risk_aversion == 1.5
+    assert agent.cara_coefficient == 1.5
+    assert isinstance(agent.utility_fn, CARAUtility)
+
+
+def test_build_agent_cara_override_risk_neutral_branch():
+    profile = load_agent_profiles()["bank"]  # profile.utility_type == "cara"
+
+    agent = build_agent(profile, cara_override=("risk_neutral", None))
+
+    assert agent.utility_type == "risk_neutral"
+    assert isinstance(agent.utility_fn, RiskNeutralUtility)
+    assert agent.cara_coefficient == 0.0  # nominal a is still recorded even though utility_type switched
