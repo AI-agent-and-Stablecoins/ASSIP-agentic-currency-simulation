@@ -19,6 +19,7 @@ from database.models import (
     MetricRecord,
     NegotiationRecord,
     SimulationRunRecord,
+    TimestepLogRecord,
     TransactionRecord,
     WalletRecord,
 )
@@ -97,6 +98,24 @@ class InterventionLogEntry(BaseModel):
     target_currency: str | None = None
     target_issuer: str | None = None
     magnitude: float
+
+
+class TimestepLogEntry(BaseModel):
+    run_id: str
+    timestep: int
+    inflation_rate: float
+    confidence_index: float
+    eth_gas_fee_gwei: float
+    solana_gas_fee_usd: float
+    eur_usd_exchange_rate: float
+
+
+class TimestepLogRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(self, entry: TimestepLogEntry) -> None:
+        self.session.add(TimestepLogRecord(**entry.model_dump()))
 
 
 class AgentRepository:

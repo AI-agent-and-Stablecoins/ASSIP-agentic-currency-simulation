@@ -190,3 +190,15 @@ class InterventionLogRecord(Base):
     target_currency: Mapped[str | None] = mapped_column(String, nullable=True)
     target_issuer: Mapped[str | None] = mapped_column(String, nullable=True)
     magnitude: Mapped[float] = mapped_column(Float)
+
+
+class TimestepLogRecord(Base):
+    __tablename__ = "timestep_logs"
+
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("simulation_runs.run_id"), primary_key=True)
+    timestep: Mapped[int] = mapped_column(Integer, primary_key=True)
+    inflation_rate: Mapped[float] = mapped_column(Float)
+    confidence_index: Mapped[float] = mapped_column(Float)
+    eth_gas_fee_gwei: Mapped[float] = mapped_column(Float)
+    solana_gas_fee_usd: Mapped[float] = mapped_column(Float)
+    eur_usd_exchange_rate: Mapped[float] = mapped_column(Float)
