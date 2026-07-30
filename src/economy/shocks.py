@@ -61,6 +61,10 @@ def apply_shock(state: MacroState, shock: ShockEvent) -> MacroState:
         # Fee spikes mutate blockchain gas_fee configs directly (src/blockchain),
         # not macro state -- the caller applies this shock at that layer.
         pass
+    elif shock.type == ShockType.CRISIS_WARNING:
+        updated.confidence_index = max(0.0, updated.confidence_index - shock.magnitude)
+    elif shock.type == ShockType.FX_RATE_SHOCK:
+        updated.peg_reference_rates["EUR"] = updated.peg_reference_rates["EUR"] * (1 + shock.magnitude)
     return updated
 
 
