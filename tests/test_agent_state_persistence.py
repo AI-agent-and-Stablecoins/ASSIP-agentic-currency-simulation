@@ -1,8 +1,8 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from database.models import Base, AgentStateRecord
-from database.repository import AgentStateLogEntry, AgentStateRepository
+from database.models import Base, AgentStateRecord, AgentMemoryLogRecord
+from database.repository import AgentStateLogEntry, AgentStateRepository, AgentMemoryLogEntry, AgentMemoryLogRepository
 
 
 def _session() -> Session:
@@ -66,3 +66,44 @@ def test_agent_state_primary_key_is_run_timestep_agent():
     rows = session.query(AgentStateRecord).order_by(AgentStateRecord.timestep).all()
     assert len(rows) == 2
     assert [r.timestep for r in rows] == [1, 2]
+
+
+def test_agent_memory_log_repository_persists_episodic_text():
+    session = _session()
+    repo = AgentMemoryLogRepository(session)
+    entry = AgentMemoryLogEntry(
+        run_id="run-master-seed-0",
+        timestep=12,
+        agent_id="buyer-1",
+        memory_type="Depeg",
+        memory_text="On day 12 I was mid-transaction in USDT when it depegged 8%.",
+    )
+
+    repo.record(entry)
+    session.commit()
+
+    rows = session.query(AgentMemoryLogRecord).all()
+    assert len(rows) == 1
+    assert rows[0].memory_type == "Depeg"
+    assert rows[0].memory_text == "On day 12 I was mid-transaction in USDT when it depegged 8%."
+
+
+def test_agent_memory_log_repository_allows_multiple_entries_per_agent():
+    session = _session()
+    repo = AgentMemoryLogRepository(session)
+    repo.record(
+        AgentMemoryLogEntry(
+            run_id="run-master-seed-0", timestep=5, agent_id="buyer-1", memory_type="Network",
+            memory_text="USDC is currently accepted by 97% of local merchants.",
+        )
+    )
+    repo.record(
+        AgentMemoryLogEntry(
+            run_id="run-master-seed-0", timestep=6, agent_id="buyer-1", memory_type="GasSpike",
+            memory_text="Ethereum gas exploded to 180 Gwei in timestep 391.",
+        )
+    )
+    session.commit()
+
+    rows = session.query(AgentMemoryLogRecord).filter_by(agent_id="buyer-1").all()
+    assert len(rows) == 2

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from database.models import (
+    AgentMemoryLogRecord,
     AgentRecord,
     AgentStateRecord,
     HallucinationRecord,
@@ -120,6 +121,22 @@ class AgentStateLogEntry(BaseModel):
     real_purchasing_power: float
     wallet_balances: dict[str, float]
     utility_score: float
+
+
+class AgentMemoryLogEntry(BaseModel):
+    run_id: str
+    timestep: int
+    agent_id: str
+    memory_type: str
+    memory_text: str
+
+
+class AgentMemoryLogRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(self, entry: AgentMemoryLogEntry) -> None:
+        self.session.add(AgentMemoryLogRecord(**entry.model_dump()))
 
 
 class TimestepLogRepository:

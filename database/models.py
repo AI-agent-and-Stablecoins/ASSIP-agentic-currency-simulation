@@ -222,3 +222,14 @@ class AgentStateRecord(Base):
     real_purchasing_power: Mapped[float] = mapped_column(Float)
     wallet_balances: Mapped[dict] = mapped_column(JSON)
     utility_score: Mapped[float] = mapped_column(Float)
+
+
+class AgentMemoryLogRecord(Base):
+    __tablename__ = "agent_memory_logs"
+
+    memory_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("simulation_runs.run_id"))
+    timestep: Mapped[int] = mapped_column(Integer)
+    agent_id: Mapped[str] = mapped_column(String, ForeignKey("agents.id"))
+    memory_type: Mapped[str] = mapped_column(String)
+    memory_text: Mapped[str] = mapped_column(String)
