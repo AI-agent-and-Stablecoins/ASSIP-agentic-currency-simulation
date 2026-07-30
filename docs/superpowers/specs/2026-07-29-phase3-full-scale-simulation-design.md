@@ -38,9 +38,9 @@ authoritative (this supersedes the differently-numbered "H1–H3" subset in
 
 | # | Hypothesis | Directionality tested |
 |---|---|---|
-| H1 | Higher CRRA σ → stronger preference for USD stablecoins over EUR stablecoins | risk aversion → currency bloc |
-| H2 | Higher CRRA σ → stronger preference for low bid-ask spread over low gas fees | risk aversion → liquidity vs. fee |
-| H3 | Higher CRRA σ → stronger preference for GENIUS Act compliance over liquidity | risk aversion → governance vs. liquidity |
+| H1 | Higher CARA risk aversion (`a`) → stronger preference for USD stablecoins over EUR stablecoins | risk aversion → currency bloc |
+| H2 | Higher CARA risk aversion (`a`) → stronger preference for low bid-ask spread over low gas fees | risk aversion → liquidity vs. fee |
+| H3 | Higher CARA risk aversion (`a`) → stronger preference for GENIUS Act compliance over liquidity | risk aversion → governance vs. liquidity |
 | H4 | Closer perceived crisis/depeg proximity → stronger shift to gold-backed tokens (PAXG/XAUT) | crisis proximity → gold |
 | H5 | Higher EUR/USD volatility → stronger preference for USD stablecoins in cross-border settlement | FX volatility → USD bloc |
 | H6 | Privacy premium threshold (USDCx vs. anonymous rail) | **Deferred** — no privacy-rail currency/chain config exists yet; out of scope for this run, to be built as a follow-up |
@@ -75,21 +75,47 @@ Each of the 100 agents is tagged with a home currency zone, **USD or EUR,
 split 50/50** (50 agents each) for balanced regression power. This is
 independent of role — e.g. both US-zone and EU-zone consumers exist.
 
-### 3.3 Per-agent CRRA risk aversion (σ)
+### 3.3 Per-agent CARA risk aversion (a)
 
-Rather than one fixed σ per role (as the current YAML profiles define, e.g.
-`consumer.yaml`'s flat `risk_aversion: 3.0`), **each of the 100 agents is
-individually assigned a σ** sampled across `{0.0, 0.5, 1.0, 1.5, 2.0, 3.0}`
-(0 = risk neutral per the user's stated convention). This is what gives
-H1–H3 genuine within-sample variance to regress on, instead of 5 discrete
-role clusters. σ is not static: it adapts across the run per
-`Experiment.md` §3E's loss-driven scaling formula (`σ_{t+1} = min(σ_max, σ_t
-+ η_risk · Loss_t / W_real_t)`), so realized losses during shocks
-increase an agent's σ over time.
+**Correction (2026-07-29, superseding the original CRRA-σ framing below the
+first draft of this spec used):** the risk-aversion parameter that drives
+H1–H3 is the **CARA coefficient `a`** (`src/utility/cara.py`'s
+`CARAUtility(risk_aversion=a)`, `U(c) = -e^{-ac}/a`), not CRRA σ. Higher
+`a` = more risk averse; `a = 0` is risk neutral; negative `a` is risk
+*seeking* (mathematically valid for `CARAUtility` — the exponential form
+is still well-defined and convex-increasing for `a < 0`, since only `a ==
+0` is rejected by the constructor as a division-by-zero case). Each
+agent's goal is to maximize this CARA utility over final wealth.
+
+Rather than one fixed `a` per role (as the current YAML profiles define,
+e.g. `bank.yaml`'s flat `risk_aversion: 0.8`), **each of the 100 agents is
+individually assigned an `a`** sampled across
+`{-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 3.0}`. This is what gives H1–H3
+genuine within-sample variance to regress on, instead of 5 discrete role
+clusters.
+
+**Handling `a = 0`:** `CARAUtility` raises `ValueError` for `risk_aversion
+== 0` (avoids the `/a` division), so an agent sampled at `a = 0` is built
+with `utility_type = "risk_neutral"` (`RiskNeutralUtility`, `U(c) = c`)
+instead of `utility_type = "cara"` — this is not a workaround but the
+mathematically correct choice: `RiskNeutralUtility` *is* the limit of CARA
+utility as `a → 0`. Every other sampled value (`a ≠ 0`, including
+negative) uses `utility_type = "cara"` with that exact coefficient. Every
+agent still records its nominal `a` (even the `a = 0` risk-neutral ones)
+as a plain field for the econometrics engine to regress against — the
+utility-function dispatch is an implementation detail, not something H1–H3
+should have to special-case.
+
+`a` is not static: it adapts across the run per `Experiment.md` §3E's
+loss-driven scaling formula (originally written as `σ_{t+1} = min(σ_max,
+σ_t + η_risk · Loss_t / W_real_t)`), applied here to `a` instead — realized
+losses during shocks increase an agent's `a` over time (push it toward
+more risk-averse), using the same mechanic.
 
 Role-level `utility_type` and `multi_attribute` weights (e.g. merchant's
 governance/liquidity/gas/volatility/compliance weights) stay as currently
-configured per role — only σ is individualized.
+configured per role for agents whose role profile specifies
+`multi_attribute` — only the CARA-eligible roles' `a` is individualized.
 
 ### 3.4 Per-agent LLM model assignment
 
@@ -98,7 +124,7 @@ the ~90-model list in `Phase 4 Model List.md`, shuffled to fill 100 slots
 (a handful of models get 2 agents to reach 100). Model becomes a per-agent
 trait exactly like risk profile or currency zone, joinable against decision
 outcomes for analysis (e.g. "does model family correlate with governance
-sensitivity independent of assigned σ?").
+sensitivity independent of assigned CARA `a`?").
 
 **Preflight step:** before assignment, verify every candidate model ID
 against OpenRouter's live `/models` endpoint (same pattern as the existing
@@ -161,7 +187,7 @@ each targeting a different currency, each with a different warning gap —
 | 7 factor-isolation sandboxes (H1–H4 pairs from `Experiment.md` §5B, domestic) | same 100 agents, tradable currency universe restricted to that sandbox's Option A/B pair | 365 days | 5 each |
 | Same 7 sandboxes, repeated cross-border (US-zone vs. EU-zone agents paired, FX conversion tax applies) | same 100 agents, same restriction, cross-border pairing forced by currency zone | 365 days | 5 each |
 
-Sandboxes reuse the same 100-agent population (identical σ, model, and
+Sandboxes reuse the same 100-agent population (identical CARA `a`, model, and
 currency-zone assignments) rather than a separately constructed smaller
 population — this keeps every agent's identity, model, and risk aversion
 consistent across every experiment cell, so a given agent's choices can be
@@ -194,7 +220,7 @@ reintroducing the removed `schema.sql`. New tables, matching
   `confidence_index`, `eth_gas_fee_gwei`, `solana_gas_fee_usd`,
   `eur_usd_exchange_rate`).
 - `agent_states` — per-agent per-day snapshot (`risk_profile`,
-  `crra_sigma`, `real_purchasing_power`, per-currency balances,
+  `cara_coefficient`, `real_purchasing_power`, per-currency balances,
   `utility_score`).
 - `agent_memory_logs` — episodic memory text per agent per day.
 
