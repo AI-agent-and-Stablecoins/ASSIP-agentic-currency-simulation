@@ -1,0 +1,349 @@
+# Full ~99-model candidate roster for Phase 3 Plan 3's per-agent model
+# assignment, translated from the user-supplied "Phase 4 Model List.md"
+# (human-readable vendor/model names, no OpenRouter IDs of its own).
+#
+# `id` is a best-effort OpenRouter model ID guess using the standard
+# vendor-prefix/model-slug convention. These are expected to be imperfect --
+# some listed models are prior-generation and may be deprecated/renamed on
+# OpenRouter by run time. This is not a bug to fix by further hand-tuning:
+# src/llm/llm_router.py's verify_model_candidates() checks every `id` here
+# against OpenRouter's live /models endpoint before assignment, excludes any
+# that don't resolve, and reports the exclusions -- see
+# docs/superpowers/specs/2026-07-30-phase3-plan3-agent-population-design.md
+# Sec 2.4.
+#
+# `name` is preserved verbatim from the source list for reporting purposes
+# (so an excluded candidate can be reported by its human-readable name, not
+# just a guessed ID string).
+
+models:
+  # OpenAI (10)
+  - id: openai/gpt-5
+    label: gpt-5
+    name: "GPT-5"
+  - id: openai/gpt-5-mini
+    label: gpt-5-mini
+    name: "GPT-5 Mini"
+  - id: openai/gpt-5-nano
+    label: gpt-5-nano
+    name: "GPT-5 Nano"
+  - id: openai/gpt-4.1
+    label: gpt-4.1
+    name: "GPT-4.1"
+  - id: openai/gpt-4.1-mini
+    label: gpt-4.1-mini
+    name: "GPT-4.1 Mini"
+  - id: openai/gpt-4.1-nano
+    label: gpt-4.1-nano
+    name: "GPT-4.1 Nano"
+  - id: openai/gpt-4o
+    label: gpt-4o
+    name: "GPT-4o"
+  - id: openai/gpt-4o-mini
+    label: gpt-4o-mini
+    name: "GPT-4o Mini"
+  - id: openai/o3
+    label: o3
+    name: "o3"
+  - id: openai/o4-mini
+    label: o4-mini
+    name: "o4-mini"
+
+  # Anthropic (7)
+  - id: anthropic/claude-opus-4
+    label: claude-opus-4
+    name: "Claude Opus 4"
+  - id: anthropic/claude-sonnet-4
+    label: claude-sonnet-4
+    name: "Claude Sonnet 4"
+  - id: anthropic/claude-haiku-4
+    label: claude-haiku-4
+    name: "Claude Haiku 4"
+  - id: anthropic/claude-3.7-sonnet
+    label: claude-sonnet-3.7
+    name: "Claude Sonnet 3.7"
+  - id: anthropic/claude-3.5-sonnet
+    label: claude-sonnet-3.5
+    name: "Claude Sonnet 3.5"
+  - id: anthropic/claude-3-opus
+    label: claude-opus-3
+    name: "Claude Opus 3"
+  - id: anthropic/claude-3-haiku
+    label: claude-haiku-3
+    name: "Claude Haiku 3"
+
+  # Google (7)
+  - id: google/gemini-2.5-pro
+    label: gemini-2.5-pro
+    name: "Gemini 2.5 Pro"
+  - id: google/gemini-2.5-flash
+    label: gemini-2.5-flash
+    name: "Gemini 2.5 Flash"
+  - id: google/gemini-2.5-flash-lite
+    label: gemini-2.5-flash-lite
+    name: "Gemini 2.5 Flash-Lite"
+  - id: google/gemini-2.0-flash-001
+    label: gemini-2.0-flash
+    name: "Gemini 2.0 Flash"
+  - id: google/gemini-2.0-flash-lite-001
+    label: gemini-2.0-flash-lite
+    name: "Gemini 2.0 Flash-Lite"
+  - id: google/gemini-1.5-pro
+    label: gemini-1.5-pro
+    name: "Gemini 1.5 Pro"
+  - id: google/gemini-1.5-flash
+    label: gemini-1.5-flash
+    name: "Gemini 1.5 Flash"
+
+  # xAI (4)
+  - id: x-ai/grok-4
+    label: grok-4
+    name: "Grok 4"
+  - id: x-ai/grok-3
+    label: grok-3
+    name: "Grok 3"
+  - id: x-ai/grok-3-mini
+    label: grok-3-mini
+    name: "Grok 3 Mini"
+  - id: x-ai/grok-beta
+    label: grok-beta
+    name: "Grok Beta"
+
+  # Meta (8)
+  - id: meta-llama/llama-4-maverick
+    label: llama-4-maverick
+    name: "Llama 4 Maverick"
+  - id: meta-llama/llama-4-scout
+    label: llama-4-scout
+    name: "Llama 4 Scout"
+  - id: meta-llama/llama-3.3-70b-instruct
+    label: llama-3.3-70b
+    name: "Llama 3.3 70B"
+  - id: meta-llama/llama-3.1-405b-instruct
+    label: llama-3.1-405b
+    name: "Llama 3.1 405B"
+  - id: meta-llama/llama-3.1-70b-instruct
+    label: llama-3.1-70b
+    name: "Llama 3.1 70B"
+  - id: meta-llama/llama-3.1-8b-instruct
+    label: llama-3.1-8b
+    name: "Llama 3.1 8B"
+  - id: meta-llama/llama-3-70b-instruct
+    label: llama-3-70b
+    name: "Llama 3 70B"
+  - id: meta-llama/llama-3-8b-instruct
+    label: llama-3-8b
+    name: "Llama 3 8B"
+
+  # DeepSeek (8)
+  - id: deepseek/deepseek-r1
+    label: deepseek-r1
+    name: "DeepSeek R1"
+  - id: deepseek/deepseek-chat-v3
+    label: deepseek-v3
+    name: "DeepSeek V3"
+  - id: deepseek/deepseek-chat
+    label: deepseek-chat
+    name: "DeepSeek Chat"
+  - id: deepseek/deepseek-coder
+    label: deepseek-coder
+    name: "DeepSeek Coder"
+  - id: deepseek/deepseek-r1-distill-llama-70b
+    label: deepseek-r1-distill-70b
+    name: "DeepSeek R1 Distill 70B"
+  - id: deepseek/deepseek-r1-distill-qwen-32b
+    label: deepseek-r1-distill-32b
+    name: "DeepSeek R1 Distill 32B"
+  - id: deepseek/deepseek-r1-distill-qwen-14b
+    label: deepseek-r1-distill-14b
+    name: "DeepSeek R1 Distill 14B"
+  - id: deepseek/deepseek-r1-distill-llama-8b
+    label: deepseek-r1-distill-8b
+    name: "DeepSeek R1 Distill 8B"
+
+  # Qwen (8)
+  - id: qwen/qwen3-235b-a22b
+    label: qwen3-235b
+    name: "Qwen3 235B"
+  - id: qwen/qwen3-32b
+    label: qwen3-32b
+    name: "Qwen3 32B"
+  - id: qwen/qwen3-14b
+    label: qwen3-14b
+    name: "Qwen3 14B"
+  - id: qwen/qwen3-8b
+    label: qwen3-8b
+    name: "Qwen3 8B"
+  - id: qwen/qwen-2.5-72b-instruct
+    label: qwen2.5-72b
+    name: "Qwen2.5 72B"
+  - id: qwen/qwen-2.5-32b-instruct
+    label: qwen2.5-32b
+    name: "Qwen2.5 32B"
+  - id: qwen/qwen-2.5-14b-instruct
+    label: qwen2.5-14b
+    name: "Qwen2.5 14B"
+  - id: qwen/qwen-2.5-7b-instruct
+    label: qwen2.5-7b
+    name: "Qwen2.5 7B"
+
+  # Mistral (8)
+  - id: mistralai/mistral-large
+    label: mistral-large
+    name: "Mistral Large"
+  - id: mistralai/mistral-medium
+    label: mistral-medium
+    name: "Mistral Medium"
+  - id: mistralai/mistral-small
+    label: mistral-small
+    name: "Mistral Small"
+  - id: mistralai/mistral-nemo
+    label: mistral-nemo
+    name: "Mistral Nemo"
+  - id: mistralai/magistral-medium
+    label: magistral
+    name: "Magistral"
+  - id: mistralai/codestral-2501
+    label: codestral
+    name: "Codestral"
+  - id: mistralai/pixtral-large-2411
+    label: pixtral-large
+    name: "Pixtral Large"
+  - id: mistralai/pixtral-12b
+    label: pixtral-12b
+    name: "Pixtral 12B"
+
+  # Cohere (4)
+  - id: cohere/command-a
+    label: command-a
+    name: "Command A"
+  - id: cohere/command-r-plus
+    label: command-r-plus
+    name: "Command R+"
+  - id: cohere/command-r
+    label: command-r
+    name: "Command R"
+  - id: cohere/aya-expanse-32b
+    label: aya-expanse-32b
+    name: "Aya Expanse 32B"
+
+  # Microsoft (4)
+  - id: microsoft/phi-4
+    label: phi-4
+    name: "Phi-4"
+  - id: microsoft/phi-4-mini
+    label: phi-4-mini
+    name: "Phi-4 Mini"
+  - id: microsoft/phi-3-medium-128k-instruct
+    label: phi-3-medium
+    name: "Phi-3 Medium"
+  - id: microsoft/phi-3-mini-128k-instruct
+    label: phi-3-mini
+    name: "Phi-3 Mini"
+
+  # Google Gemma (5)
+  - id: google/gemma-3-27b-it
+    label: gemma-3-27b
+    name: "Gemma 3 27B"
+  - id: google/gemma-3-12b-it
+    label: gemma-3-12b
+    name: "Gemma 3 12B"
+  - id: google/gemma-3-4b-it
+    label: gemma-3-4b
+    name: "Gemma 3 4B"
+  - id: google/gemma-2-27b-it
+    label: gemma-2-27b
+    name: "Gemma 2 27B"
+  - id: google/gemma-2-9b-it
+    label: gemma-2-9b
+    name: "Gemma 2 9B"
+
+  # MiniMax (3)
+  - id: minimax/minimax-m1
+    label: minimax-m1
+    name: "MiniMax M1"
+  - id: minimax/minimax-text-01
+    label: minimax-text-01
+    name: "MiniMax Text-01"
+  - id: minimax/minimax-01
+    label: minimax-01
+    name: "MiniMax 01"
+
+  # Moonshot (3)
+  - id: moonshotai/kimi-k2
+    label: kimi-k2
+    name: "Kimi K2"
+  - id: moonshotai/kimi-k1.5
+    label: kimi-k1.5
+    name: "Kimi K1.5"
+  - id: moonshotai/kimi-long-context
+    label: kimi-long-context
+    name: "Kimi Long Context"
+
+  # Alibaba (3)
+  - id: qwen/qwq-32b
+    label: qwq-32b
+    name: "QwQ-32B"
+  - id: qwen/qwen-2.5-coder-32b-instruct
+    label: qwen2.5-coder-32b
+    name: "Qwen2.5 Coder 32B"
+  - id: qwen/qwen-2.5-coder-7b-instruct
+    label: qwen2.5-coder-7b
+    name: "Qwen2.5 Coder 7B"
+
+  # NVIDIA (2)
+  - id: nvidia/llama-3.1-nemotron-ultra-253b-v1
+    label: nemotron-ultra
+    name: "Nemotron Ultra"
+  - id: nvidia/llama-3.1-nemotron-70b-instruct
+    label: nemotron-70b
+    name: "Nemotron 70B"
+
+  # Amazon (3)
+  - id: amazon/nova-premier-v1
+    label: nova-premier
+    name: "Nova Premier"
+  - id: amazon/nova-pro-v1
+    label: nova-pro
+    name: "Nova Pro"
+  - id: amazon/nova-lite-v1
+    label: nova-lite
+    name: "Nova Lite"
+
+  # Miscellaneous (12)
+  - id: z-ai/glm-4.5
+    label: glm-4.5
+    name: "GLM-4.5"
+  - id: thudm/glm-4
+    label: glm-4
+    name: "GLM-4"
+  - id: 01-ai/yi-large
+    label: yi-large
+    name: "Yi Large"
+  - id: 01-ai/yi-34b-chat
+    label: yi-34b
+    name: "Yi 34B"
+  - id: cognitivecomputations/dolphin-llama-3-70b
+    label: dolphin-llama
+    name: "Dolphin Llama"
+  - id: nousresearch/hermes-3-llama-3.1-70b
+    label: hermes-3
+    name: "Hermes 3"
+  - id: openchat/openchat-7b
+    label: openchat
+    name: "OpenChat"
+  - id: nousresearch/nous-hermes-2-mixtral-8x7b-dpo
+    label: nous-hermes
+    name: "Nous Hermes"
+  - id: databricks/dbrx-instruct
+    label: dbrx
+    name: "DBRX"
+  - id: mistralai/mixtral-8x22b-instruct
+    label: mixtral-8x22b
+    name: "Mixtral 8x22B"
+  - id: mistralai/mixtral-8x7b-instruct
+    label: mixtral-8x7b
+    name: "Mixtral 8x7B"
+  - id: microsoft/wizardlm-2-8x22b
+    label: wizardlm
+    name: "WizardLM"
