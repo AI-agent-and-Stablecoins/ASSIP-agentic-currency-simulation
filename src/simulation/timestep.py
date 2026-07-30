@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from src.agents.buyer_agent import BuyerAgent
 from src.agents.seller_agent import SellerAgent
 from src.blockchain.routing_engine import generate_candidates
-from src.economy.shocks import apply_shock
+from src.economy.shocks import ShockEvent, apply_currency_shock, apply_shock
 from src.market.pricing_engine import true_price
 from src.negotiation.conversation_history import ConversationLog
 from src.negotiation.negotiation_engine import negotiate
@@ -26,6 +26,7 @@ class TimestepResult(BaseModel):
     day: int
     transactions: list[Transaction] = Field(default_factory=list)
     negotiations: list[ConversationLog] = Field(default_factory=list)
+    fired_shocks: list[ShockEvent] = Field(default_factory=list)
 
 
 def run_timestep(
@@ -36,12 +37,15 @@ def run_timestep(
     agreement_tolerance: float = 0.01,
     concession_rate: float = 0.3,
 ) -> TimestepResult:
-    # Steps 1-2: update macroeconomic state and prices from any shocks due today.
-    for shock in env.event_queue.pop_due(day):
+    # Steps 1-2: update macroeconomic state, currency attributes, and prices
+    # from any shocks due today.
+    due_shocks = env.event_queue.pop_due(day)
+    for shock in due_shocks:
         env.macro_state = apply_shock(env.macro_state, shock)
+        env.currencies = apply_currency_shock(env.currencies, shock)
     env.refresh_exchange_rates()
 
-    result = TimestepResult(day=day)
+    result = TimestepResult(day=day, fired_shocks=due_shocks)
     env.marketplace.clear_listings()
 
     sellers = [a for a in env.agents.values() if isinstance(a, SellerAgent)]
