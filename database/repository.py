@@ -11,11 +11,17 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from database.models import (
+    AgentMemoryLogRecord,
     AgentRecord,
+    AgentStateRecord,
+    HallucinationRecord,
+    InterventionLogRecord,
     LLMDecisionRecord,
     MarketSnapshotRecord,
     MetricRecord,
     NegotiationRecord,
+    SimulationRunRecord,
+    TimestepLogRecord,
     TransactionRecord,
     WalletRecord,
 )
@@ -39,6 +45,7 @@ class LLMDecisionLogEntry(BaseModel):
     model_attempts: list[str]
     prompt_version: str
     rendered_prompt_hash: str
+    system_prompt: str
     action: str
     currency: str
     chain: str
@@ -55,12 +62,97 @@ class LLMDecisionLogEntry(BaseModel):
     governance_prompt_enabled: bool
 
 
+class HallucinationLogEntry(BaseModel):
+    decision_id: str | None = None
+    transaction_id: str | None = None
+    expected_price: float
+    paid_price: float
+    overpayment_pct: float
+    direction: str
+    is_hallucination: bool
+    currency_symbol: str
+    model_name: str | None = None
+
+
 class MarketSnapshotLogEntry(BaseModel):
     source: str
     ticker: str
     price: float | None
     data_window: str | None
     negotiation_id: str | None = None
+
+
+class SimulationRunLogEntry(BaseModel):
+    run_id: str
+    scenario_name: str
+    research_mode: str
+    random_seed: int
+    model_roster_summary: str
+    prompt_version_hash: str
+    git_commit_hash: str
+    config_hash: str
+
+
+class InterventionLogEntry(BaseModel):
+    run_id: str
+    timestep: int
+    shock_type: str
+    target_currency: str | None = None
+    target_issuer: str | None = None
+    magnitude: float
+
+
+class TimestepLogEntry(BaseModel):
+    run_id: str
+    timestep: int
+    inflation_rate: float
+    confidence_index: float
+    eth_gas_fee_gwei: float
+    solana_gas_fee_usd: float
+    eur_usd_exchange_rate: float
+
+
+class AgentStateLogEntry(BaseModel):
+    run_id: str
+    timestep: int
+    agent_id: str
+    risk_profile: str
+    crra_sigma: float
+    real_purchasing_power: float
+    wallet_balances: dict[str, float]
+    utility_score: float
+
+
+class AgentMemoryLogEntry(BaseModel):
+    run_id: str
+    timestep: int
+    agent_id: str
+    memory_type: str
+    memory_text: str
+
+
+class AgentMemoryLogRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(self, entry: AgentMemoryLogEntry) -> None:
+        self.session.add(AgentMemoryLogRecord(**entry.model_dump()))
+
+
+class TimestepLogRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(self, entry: TimestepLogEntry) -> None:
+        self.session.add(TimestepLogRecord(**entry.model_dump()))
+
+
+class AgentStateRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(self, entry: AgentStateLogEntry) -> None:
+        self.session.add(AgentStateRecord(**entry.model_dump()))
 
 
 class AgentRepository:
@@ -104,6 +196,7 @@ class TransactionRepository:
                 paid_value=tx.paid_value,
                 timestep=tx.timestep,
                 status=tx.status.value,
+                fx_tax_paid=tx.fx_tax_paid,
                 timestamp=datetime.now(timezone.utc),
             )
         )
@@ -147,6 +240,14 @@ class LLMDecisionRepository:
         )
 
 
+class HallucinationRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(self, entry: HallucinationLogEntry) -> None:
+        self.session.add(HallucinationRecord(**entry.model_dump()))
+
+
 class MarketSnapshotRepository:
     def __init__(self, session: Session):
         self.session = session
@@ -158,6 +259,22 @@ class MarketSnapshotRepository:
                 retrieval_timestamp=datetime.now(timezone.utc),
             )
         )
+
+
+class SimulationRunRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(self, entry: SimulationRunLogEntry) -> None:
+        self.session.add(SimulationRunRecord(**entry.model_dump(), created_at=datetime.now(timezone.utc)))
+
+
+class InterventionLogRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(self, entry: InterventionLogEntry) -> None:
+        self.session.add(InterventionLogRecord(**entry.model_dump()))
 
 
 def persist_timestep(session: Session, env: Environment, result: TimestepResult) -> None:

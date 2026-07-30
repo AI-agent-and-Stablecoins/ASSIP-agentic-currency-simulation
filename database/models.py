@@ -51,6 +51,7 @@ class TransactionRecord(Base):
     paid_value: Mapped[float] = mapped_column(Float)
     timestep: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String)
+    fx_tax_paid: Mapped[float] = mapped_column(Float, default=0.0)
     timestamp: Mapped[datetime] = mapped_column(DateTime)
 
 
@@ -65,16 +66,20 @@ class NegotiationRecord(Base):
 
 
 class HallucinationRecord(Base):
-    """Inert in Phase 1 -- populated once Phase 2's LLM decisions produce
-    expected-vs-paid comparisons. Defined now so no migration is needed later."""
+    """Every hallucination check, whether or not it ties to a settled
+    transaction -- detection happens on any LLM decision, and a decision can
+    be rejected/countered long before (or without ever) settling."""
 
     __tablename__ = "hallucinations"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    transaction_id: Mapped[str] = mapped_column(String, ForeignKey("transactions.id"))
+    decision_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    transaction_id: Mapped[str | None] = mapped_column(String, ForeignKey("transactions.id"), nullable=True)
     expected_price: Mapped[float] = mapped_column(Float)
     paid_price: Mapped[float] = mapped_column(Float)
     overpayment_pct: Mapped[float] = mapped_column(Float)
+    direction: Mapped[str] = mapped_column(String)
+    is_hallucination: Mapped[bool] = mapped_column(Boolean)
     currency_symbol: Mapped[str] = mapped_column(String)
     model_name: Mapped[str | None] = mapped_column(String, nullable=True)
 
@@ -118,6 +123,7 @@ class LLMDecisionRecord(Base):
     model_attempts: Mapped[list] = mapped_column(JSON)
     prompt_version: Mapped[str] = mapped_column(String)
     rendered_prompt_hash: Mapped[str] = mapped_column(String)
+    system_prompt: Mapped[str] = mapped_column(String)
     action: Mapped[str] = mapped_column(String)
     currency: Mapped[str] = mapped_column(String)
     chain: Mapped[str] = mapped_column(String)
@@ -149,3 +155,81 @@ class MarketSnapshotRecord(Base):
     price: Mapped[float | None] = mapped_column(Float, nullable=True)
     data_window: Mapped[str | None] = mapped_column(String, nullable=True)
     negotiation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class SimulationRunRecord(Base):
+    """Provenance metadata captured once per run, before the first timestep.
+
+    model_roster_summary is a short descriptor of the run's agent-to-model
+    assignment (Phase 3 assigns one model per agent, not one per run) rather
+    than a single openrouter_model_id -- see docs/superpowers/plans/
+    2026-07-29-phase3-01-foundation-persistence.md Task 5 for why this
+    deviates from Experiment.md's singular field name.
+    """
+
+    __tablename__ = "simulation_runs"
+
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    scenario_name: Mapped[str] = mapped_column(String)
+    research_mode: Mapped[str] = mapped_column(String)
+    random_seed: Mapped[int] = mapped_column(Integer)
+    model_roster_summary: Mapped[str] = mapped_column(String)
+    prompt_version_hash: Mapped[str] = mapped_column(String)
+    git_commit_hash: Mapped[str] = mapped_column(String)
+    config_hash: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class InterventionLogRecord(Base):
+    __tablename__ = "intervention_logs"
+
+    event_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("simulation_runs.run_id"))
+    timestep: Mapped[int] = mapped_column(Integer)
+    shock_type: Mapped[str] = mapped_column(String)
+    target_currency: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_issuer: Mapped[str | None] = mapped_column(String, nullable=True)
+    magnitude: Mapped[float] = mapped_column(Float)
+
+
+class TimestepLogRecord(Base):
+    __tablename__ = "timestep_logs"
+
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("simulation_runs.run_id"), primary_key=True)
+    timestep: Mapped[int] = mapped_column(Integer, primary_key=True)
+    inflation_rate: Mapped[float] = mapped_column(Float)
+    confidence_index: Mapped[float] = mapped_column(Float)
+    eth_gas_fee_gwei: Mapped[float] = mapped_column(Float)
+    solana_gas_fee_usd: Mapped[float] = mapped_column(Float)
+    eur_usd_exchange_rate: Mapped[float] = mapped_column(Float)
+
+
+class AgentStateRecord(Base):
+    """Per-agent-per-day snapshot. wallet_balances is a JSON dict keyed by
+    currency symbol rather than Experiment.md's fixed usd_balance/
+    eur_balance/gold_balance columns -- this codebase's currency universe
+    has nine currencies, not three, and a fixed schema would silently drop
+    six of them. See docs/superpowers/plans/
+    2026-07-29-phase3-01-foundation-persistence.md Task 8."""
+
+    __tablename__ = "agent_states"
+
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("simulation_runs.run_id"), primary_key=True)
+    timestep: Mapped[int] = mapped_column(Integer, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String, ForeignKey("agents.id"), primary_key=True)
+    risk_profile: Mapped[str] = mapped_column(String)
+    crra_sigma: Mapped[float] = mapped_column(Float)
+    real_purchasing_power: Mapped[float] = mapped_column(Float)
+    wallet_balances: Mapped[dict] = mapped_column(JSON)
+    utility_score: Mapped[float] = mapped_column(Float)
+
+
+class AgentMemoryLogRecord(Base):
+    __tablename__ = "agent_memory_logs"
+
+    memory_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("simulation_runs.run_id"))
+    timestep: Mapped[int] = mapped_column(Integer)
+    agent_id: Mapped[str] = mapped_column(String, ForeignKey("agents.id"))
+    memory_type: Mapped[str] = mapped_column(String)
+    memory_text: Mapped[str] = mapped_column(String)

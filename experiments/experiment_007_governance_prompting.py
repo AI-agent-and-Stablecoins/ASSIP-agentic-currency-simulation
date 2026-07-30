@@ -24,7 +24,12 @@ import os
 import httpx
 from dotenv import load_dotenv
 
-from database.repository import LLMDecisionLogEntry, LLMDecisionRepository
+from database.repository import (
+    HallucinationLogEntry,
+    HallucinationRepository,
+    LLMDecisionLogEntry,
+    LLMDecisionRepository,
+)
 from src.agents.agent_factory import build_agent, load_agent_profiles
 from src.blockchain.chain import load_chain_universe
 from src.blockchain.routing_engine import generate_candidates
@@ -32,7 +37,7 @@ from src.currencies.currency import load_currency_universe
 from src.economy.macro_state import MacroState
 from src.llm.agent_reasoning import AgentDecisionContext, TransactionContext, build_decision_context, render_prompt, PROMPT_VERSIONS, hash_rendered_prompt
 from src.llm.decision_schema import Decision, DecisionAction
-from src.llm.hallucination_detector import detect_hallucination
+from src.llm.hallucination_detector import HallucinationDirection, detect_hallucination
 from src.llm.llm_router import ModelCallFailedError, build_openrouter_client, call_model, load_model_roster
 from src.llm.market_intelligence import load_currency_profile
 from src.utils.constants import REPO_ROOT
@@ -88,6 +93,7 @@ def run_cell(
     governance_prompt_enabled: bool,
     client: httpx.Client,
     repository: LLMDecisionRepository | None = None,
+    hallucination_repository: HallucinationRepository | None = None,
 ) -> dict:
     """Runs one (model, condition) cell. Returns a plain dict rather than a
     pydantic model since this is a script-level result row, not a value
@@ -114,6 +120,21 @@ def run_cell(
             GOOD_TRUE_PRICE, decision.price, currency_symbol=decision.proposed_currency, actual_model=model_id
         )
 
+    if hallucination is not None and hallucination_repository is not None:
+        hallucination_repository.record(
+            HallucinationLogEntry(
+                decision_id=None,
+                transaction_id=None,
+                expected_price=hallucination.expected_value,
+                paid_price=hallucination.paid_value,
+                overpayment_pct=hallucination.percentage_error,
+                direction=hallucination.direction.value,
+                is_hallucination=hallucination.direction != HallucinationDirection.ACCURATE,
+                currency_symbol=hallucination.currency_symbol or "",
+                model_name=hallucination.actual_model,
+            )
+        )
+
     if repository is not None:
         repository.record(
             LLMDecisionLogEntry(
@@ -129,6 +150,7 @@ def run_cell(
                 model_attempts=[model_id],
                 prompt_version=PROMPT_VERSIONS["buyer"],
                 rendered_prompt_hash=hash_rendered_prompt(prompt),
+                system_prompt=prompt,
                 action=decision.action.value,
                 currency=decision.proposed_currency,
                 chain=decision.proposed_chain,
@@ -198,9 +220,10 @@ def main() -> None:
     create_all_tables()
     session = new_session()
     repository = LLMDecisionRepository(session)
+    hallucination_repository = HallucinationRepository(session)
 
     results = [
-        run_cell(model_id, governance_prompt_enabled, client, repository)
+        run_cell(model_id, governance_prompt_enabled, client, repository, hallucination_repository=hallucination_repository)
         for governance_prompt_enabled in (False, True)
         for model_id in pinned_models
     ]
