@@ -304,6 +304,44 @@ def test_build_decision_context_filters_live_price_snapshots_to_candidates_only(
     assert set(context.live_price_snapshots.keys()) == {"USDC"}
 
 
+def test_build_decision_context_filters_currency_history_to_candidates_only():
+    agent_context = AgentUtilityContext(
+        agent_id="a1",
+        agent_class="buyer",
+        risk_profile="low",
+        utility_type="crra",
+        risk_aversion=3.0,
+        wallet_balances={"USDC": 1000.0},
+    )
+    candidates = [_option(currency_symbol="USDC")]
+    macro = MacroState()
+    txn_context = TransactionContext(is_cross_border=False)
+    currency_history = {
+        "USDC": CurrencyHistory(
+            trust_now=0.95,
+            trust_30d_ago=0.93,
+            trust_min_90d=0.91,
+            trend="stable",
+            depeg_events_90d=0,
+            last_event_days_ago=None,
+        ),
+        "USDT": CurrencyHistory(
+            trust_now=0.41,
+            trust_30d_ago=0.55,
+            trust_min_90d=0.38,
+            trend="declining",
+            depeg_events_90d=2,
+            last_event_days_ago=6,
+        ),
+    }
+
+    context = build_decision_context(
+        agent_context, candidates, {}, macro, macro, txn_context, currency_history=currency_history
+    )
+
+    assert set(context.currency_history.keys()) == {"USDC"}
+
+
 def test_render_prompt_includes_live_price_block():
     agent_context = AgentUtilityContext(
         agent_id="a1",
