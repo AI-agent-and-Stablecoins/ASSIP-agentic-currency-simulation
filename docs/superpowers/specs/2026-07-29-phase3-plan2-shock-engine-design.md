@@ -174,15 +174,37 @@ no notion of individual agents — it exposes `history()` and `stdev()`
 helpers; the per-agent perception calculation is the caller's job
 (`src/llm/agent_reasoning.py`, building each agent's prompt context).
 
-### 3.5 Event log → Plan 1's `intervention_logs`
+### 3.5 Event log → `TimestepResult`, persisted by Plan 4
 
-`src/economy/event_log.py`'s append-only log is an in-memory list during a
-run (`EventLog.record(day, shock_type, target, severity)`), and
-`timestep.py`'s daily loop calls `InterventionLogRepository.record(...)`
-(Plan 1) directly whenever a shock fires — no separate persistence step
-needed since Plan 1 already built exactly this table/repository.
+`timestep.py` has no database dependency today (`run_timestep` takes no
+`Session`; the existing `simulation_runner.py`'s `on_timestep` callback is
+where DB writes happen, via `persist_timestep(session, env, result)` in
+`database/repository.py`) — and Plan 1's new tables (`intervention_logs`,
+`agent_memory_logs`, `agent_states`, `timestep_logs`) all key on `run_id`,
+a concept `timestep.py`/`Environment` don't carry (a single `Environment`
+doesn't know which of Plan 4's many runs it belongs to). So this plan keeps
+`timestep.py` DB-free and run_id-free, exactly like today:
 
-### 3.6 Agent narrative memory → Plan 1's `agent_memory_logs`
+- `src/economy/event_log.py`'s `EventLog` is a plain in-memory
+  `list[ShockEvent]` accumulator for the currently-firing day's shocks
+  (`EventLog.record(shock: ShockEvent) -> None`, `EventLog.due_today(day:
+  int) -> list[ShockEvent]`).
+- `TimestepResult` (`src/simulation/timestep.py`) gets one new field:
+  `fired_shocks: list[ShockEvent] = Field(default_factory=list)` — the
+  shocks that fired on this exact day, already known before persistence.
+
+**Plan 4 owns the actual write path**: it already has to extend
+`persist_timestep()` with a `run_id` parameter to populate `timestep_logs`/
+`agent_states` (neither of which any plan writes to yet either) — at that
+point it also iterates `result.fired_shocks` and calls
+`InterventionLogRepository.record(InterventionLogEntry(run_id=..., timestep=day,
+...))` per fired shock. This plan's job stops at making the shock data
+available on `TimestepResult`; wiring it into a specific `run_id`'s
+persistence session is explicitly Plan 4's responsibility, matching the
+existing architectural boundary (`timestep.py` computes, `repository.py`
+callers persist).
+
+### 3.6 Agent narrative memory → `TimestepResult`, persisted by Plan 4
 
 `src/agents/memory.py`'s `AgentMemory` (currently just per-currency
 success/fail counts) gets one new field:
@@ -198,12 +220,15 @@ class AgentMemory(BaseModel):
             self.narrative_events = self.narrative_events[-max_events:]
 ```
 
-`timestep.py` calls `agent.memory.record_narrative(...)` and
-`AgentMemoryLogRepository.record(...)` (Plan 1) together whenever a shock
+`timestep.py` calls `agent.memory.record_narrative(...)` whenever a shock
 notably affects an agent's held currency (e.g. the agent was holding a
-currency that just got hit by `depeg_event`) — both the in-memory rolling
-list (for the next prompt) and the durable per-run log (for post-hoc
-analysis) get the same event text.
+currency that just got hit by `depeg_event`), and appends the same
+`(agent_id, memory_type, memory_text)` tuple to a new `TimestepResult.
+memory_events: list[tuple[str, str, str]]` field. Same boundary as §3.5:
+the in-memory rolling list on the agent is updated live (feeds the next
+day's prompt via `CurrencyHistory`), while `TimestepResult.memory_events`
+is what Plan 4 reads to call `AgentMemoryLogRepository.record(...)` with
+the run_id it owns.
 
 ## 4. File Structure
 
@@ -225,8 +250,9 @@ analysis) get the same event text.
 - **Modify:** `src/llm/prompts/{buyer,seller,investor,bank}_prompt.txt`
   (add a `# History` section rendering `{history_block}`)
 - **Modify:** `src/agents/memory.py` (`narrative_events` field)
-- **Modify:** `src/simulation/timestep.py` (wire shock application, event
-  log persistence, narrative memory persistence into the daily loop)
+- **Modify:** `src/simulation/timestep.py` (wire shock application into the
+  daily loop; `TimestepResult` gains `fired_shocks`/`memory_events` fields
+  — no DB dependency added, consistent with today's design)
 - **Test:** new `tests/test_trust_ledger.py`, new `tests/test_shocks_extended.py`,
   new `tests/test_agent_reasoning_history.py`, extend `tests/test_agents.py`
 
