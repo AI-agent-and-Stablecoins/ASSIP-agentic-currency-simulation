@@ -15,9 +15,10 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from src.currencies.currency import CurrencyConfig
-from src.economy.shocks import ShockEvent
+from src.economy.shocks import ShockEvent, ShockType
 from src.utils.config_loader import load_yaml_as
 from src.utils.constants import CONFIG_ROOT
+from src.utils.helpers import clamp
 
 TRUST_PARAMS_PATH = CONFIG_ROOT / "economy" / "trust_params.yaml"
 
@@ -36,9 +37,14 @@ def load_trust_params(path: Path = TRUST_PARAMS_PATH) -> TrustParams:
 class _CurrencyLedgerState(BaseModel):
     trust_score: float
     trust_history: list[float] = Field(default_factory=list)
+    peg_error_offset: float = 0.0
+    liquidity_offset: float = 0.0
 
 
 class TrustLedger:
+    _PEG_OFFSET_SHOCKS = {ShockType.DEPEG_EVENT, ShockType.FX_VOLATILITY_SHOCK}
+    _LIQUIDITY_OFFSET_SHOCKS = {ShockType.LIQUIDITY_CRUNCH, ShockType.REGULATORY_ENFORCEMENT, ShockType.CAPITAL_CONTROLS}
+
     def __init__(self, currencies: dict[str, CurrencyConfig], params: TrustParams):
         self._params = params
         self._asset_class_of = {symbol: cfg.asset_class for symbol, cfg in currencies.items()}
@@ -54,8 +60,23 @@ class TrustLedger:
     def history(self, symbol: str, days: int) -> list[float]:
         return self._state[symbol].trust_history[-days:]
 
+    def peg_error_offset(self, symbol: str) -> float:
+        return self._state[symbol].peg_error_offset
+
+    def liquidity_offset(self, symbol: str) -> float:
+        return self._state[symbol].liquidity_offset
+
+    def effective_peg_error(self, symbol: str, baseline: float) -> float:
+        return max(0.0, baseline + self.peg_error_offset(symbol))
+
+    def effective_liquidity_score(self, symbol: str, baseline: float) -> float:
+        return clamp(baseline + self.liquidity_offset(symbol), 0.0, 1.0)
+
     def update(self, fired_shocks: list[ShockEvent]) -> None:
         severity_by_currency: dict[str, float] = {}
+        peg_shock_by_currency: dict[str, float] = {}
+        liquidity_shock_by_currency: dict[str, float] = {}
+
         for shock in fired_shocks:
             if shock.target_currency is None:
                 continue
@@ -63,6 +84,14 @@ class TrustLedger:
             severity_by_currency[shock.target_currency] = max(
                 severity_by_currency.get(shock.target_currency, 0.0), severity
             )
+            if shock.type in self._PEG_OFFSET_SHOCKS:
+                peg_shock_by_currency[shock.target_currency] = (
+                    peg_shock_by_currency.get(shock.target_currency, 0.0) + shock.magnitude
+                )
+            if shock.type in self._LIQUIDITY_OFFSET_SHOCKS:
+                liquidity_shock_by_currency[shock.target_currency] = (
+                    liquidity_shock_by_currency.get(shock.target_currency, 0.0) - abs(shock.magnitude)
+                )
 
         for symbol, state in self._state.items():
             severity = severity_by_currency.get(symbol)
@@ -85,3 +114,10 @@ class TrustLedger:
             max_history = self._params.rolling_window_days * 3
             if len(state.trust_history) > max_history:
                 state.trust_history = state.trust_history[-max_history:]
+
+            state.peg_error_offset += (
+                -self._params.lambda_recover * state.peg_error_offset + peg_shock_by_currency.get(symbol, 0.0)
+            )
+            state.liquidity_offset += (
+                -self._params.lambda_recover * state.liquidity_offset + liquidity_shock_by_currency.get(symbol, 0.0)
+            )
