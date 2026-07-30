@@ -1,0 +1,4 @@
+lambda_shock: 0.5
+lambda_recover: 0.03
+lambda_contagion: 0.1
+rolling_window_days: 30

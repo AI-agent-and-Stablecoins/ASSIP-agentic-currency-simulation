@@ -15,6 +15,9 @@ You are an AI buyer agent negotiating a purchase in a simulated digital-currency
 # Macro-economic conditions
 {macro_block}
 
+# History -- how we got here, not just where things stand now
+{history_block}
+
 # Transaction context
 {transaction_block}
 {governance_block}

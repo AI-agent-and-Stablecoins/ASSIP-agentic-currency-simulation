@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from src.agents.buyer_agent import BuyerAgent
 from src.agents.seller_agent import SellerAgent
 from src.blockchain.routing_engine import generate_candidates
-from src.economy.shocks import apply_shock
+from src.economy.shocks import ShockEvent, ShockType, apply_currency_shock, apply_shock
 from src.market.pricing_engine import true_price
 from src.negotiation.conversation_history import ConversationLog
 from src.negotiation.negotiation_engine import negotiate
@@ -26,6 +26,16 @@ class TimestepResult(BaseModel):
     day: int
     transactions: list[Transaction] = Field(default_factory=list)
     negotiations: list[ConversationLog] = Field(default_factory=list)
+    fired_shocks: list[ShockEvent] = Field(default_factory=list)
+    memory_events: list[tuple[str, str, str]] = Field(default_factory=list)
+
+
+_SHOCK_MEMORY_LABELS = {
+    ShockType.DEPEG_EVENT: "Depeg",
+    ShockType.GOVERNANCE_DOWNGRADE: "GovernanceDowngrade",
+    ShockType.LIQUIDITY_CRUNCH: "LiquidityCrunch",
+    ShockType.REGULATORY_ENFORCEMENT: "RegulatoryEnforcement",
+}
 
 
 def run_timestep(
@@ -36,12 +46,34 @@ def run_timestep(
     agreement_tolerance: float = 0.01,
     concession_rate: float = 0.3,
 ) -> TimestepResult:
-    # Steps 1-2: update macroeconomic state and prices from any shocks due today.
-    for shock in env.event_queue.pop_due(day):
+    # Steps 1-2: update macroeconomic state, currency attributes, and prices
+    # from any shocks due today.
+    due_shocks = env.event_queue.pop_due(day)
+    for shock in due_shocks:
         env.macro_state = apply_shock(env.macro_state, shock)
+        env.currencies = apply_currency_shock(env.currencies, shock)
     env.refresh_exchange_rates()
 
-    result = TimestepResult(day=day)
+    # Advance trust/peg/liquidity dynamics once per day, regardless of
+    # whether any shock fired today (a quiet day is a valid input that
+    # still drives recovery toward baseline).
+    env.trust_ledger.update(due_shocks, env.currencies)
+
+    result = TimestepResult(day=day, fired_shocks=due_shocks)
+
+    for shock in due_shocks:
+        if shock.target_currency is None or shock.type not in _SHOCK_MEMORY_LABELS:
+            continue
+        label = _SHOCK_MEMORY_LABELS[shock.type]
+        for agent in env.agents.values():
+            if agent.wallet.balances.get(shock.target_currency, 0.0) > 0:
+                event_text = (
+                    f"Day {day}: {shock.target_currency} {label.lower()} "
+                    f"(magnitude {shock.magnitude})."
+                )
+                agent.memory.record_narrative(event_text)
+                result.memory_events.append((agent.agent_id, label, event_text))
+
     env.marketplace.clear_listings()
 
     sellers = [a for a in env.agents.values() if isinstance(a, SellerAgent)]
@@ -66,7 +98,13 @@ def run_timestep(
             seller = env.agents[listing.seller_id]
 
             # Steps 5, 7-8: compute utility, choose currency and blockchain.
-            candidates = generate_candidates(buyer.wallet.balances, env.currencies, env.chains, env.liquidity_pools)
+            candidates = generate_candidates(
+                buyer.wallet.balances,
+                env.currencies,
+                env.chains,
+                env.liquidity_pools,
+                trust_ledger=env.trust_ledger,
+            )
             if not candidates:
                 continue
             chosen = buyer.choose_currency_and_chain(candidates)

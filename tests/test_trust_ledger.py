@@ -1,0 +1,139 @@
+import pytest
+
+from src.currencies.currency import load_currency_universe
+from src.economy.shocks import ShockEvent, ShockType, apply_currency_shock
+from src.economy.trust import TrustLedger, TrustParams, load_trust_params
+from src.utils.helpers import clamp
+
+
+def _params() -> TrustParams:
+    return TrustParams(lambda_shock=0.5, lambda_recover=0.03, lambda_contagion=0.1, rolling_window_days=30)
+
+
+def test_trust_ledger_initializes_at_governance_score():
+    currencies = load_currency_universe()
+    ledger = TrustLedger(currencies, _params())
+
+    assert ledger.trust_score("USDC") == pytest.approx(currencies["USDC"].governance_score)
+    assert ledger.trust_score("USDT") == pytest.approx(currencies["USDT"].governance_score)
+
+
+def test_trust_ledger_quiet_day_recovers_toward_baseline():
+    currencies = load_currency_universe()
+    params = _params()
+    ledger = TrustLedger(currencies, params)
+    baseline = currencies["USDT"].governance_score
+
+    # Manually depress USDT's trust via an event day, then let quiet days recover it.
+    ledger.update([ShockEvent(day=0, type=ShockType.DEPEG_EVENT, magnitude=0.8, target_currency="USDT")])
+    depressed = ledger.trust_score("USDT")
+    assert depressed < baseline
+
+    for _ in range(5):
+        ledger.update([])
+
+    recovered = ledger.trust_score("USDT")
+    assert recovered > depressed
+    assert recovered < baseline  # partial recovery only, lambda_recover=0.03 is slow
+
+
+def test_load_trust_params_reads_the_real_config():
+    params = load_trust_params()
+
+    assert params.lambda_shock == 0.5
+    assert params.lambda_recover == 0.03
+    assert params.lambda_contagion == 0.1
+    assert params.rolling_window_days == 30
+
+
+def test_depeg_event_spikes_and_decays_peg_error_offset():
+    currencies = load_currency_universe()
+    ledger = TrustLedger(currencies, _params())
+
+    ledger.update([ShockEvent(day=0, type=ShockType.DEPEG_EVENT, magnitude=0.08, target_currency="USDT")])
+    spiked = ledger.peg_error_offset("USDT")
+    assert spiked == pytest.approx(0.08)
+    assert ledger.effective_peg_error("USDT", currencies["USDT"].peg_error) == pytest.approx(
+        currencies["USDT"].peg_error + spiked
+    )
+
+    for _ in range(10):
+        ledger.update([])
+
+    decayed = ledger.peg_error_offset("USDT")
+    assert 0.0 < decayed < spiked
+
+
+def test_liquidity_crunch_drops_and_recovers_liquidity_offset():
+    currencies = load_currency_universe()
+    ledger = TrustLedger(currencies, _params())
+
+    ledger.update([ShockEvent(day=0, type=ShockType.LIQUIDITY_CRUNCH, magnitude=0.3, target_currency="USDC")])
+    dropped = ledger.liquidity_offset("USDC")
+    assert dropped < 0.0
+    effective = ledger.effective_liquidity_score("USDC", currencies["USDC"].liquidity_score)
+    assert effective == pytest.approx(clamp(currencies["USDC"].liquidity_score + dropped, 0.0, 1.0))
+
+    for _ in range(10):
+        ledger.update([])
+
+    recovered = ledger.liquidity_offset("USDC")
+    assert dropped < recovered < 0.0
+
+
+def test_currencies_untouched_by_offset_shocks_have_zero_offset():
+    currencies = load_currency_universe()
+    ledger = TrustLedger(currencies, _params())
+
+    ledger.update([ShockEvent(day=0, type=ShockType.DEPEG_EVENT, magnitude=0.08, target_currency="USDT")])
+
+    assert ledger.peg_error_offset("USDC") == 0.0
+    assert ledger.liquidity_offset("USDC") == 0.0
+
+
+def test_history_with_zero_days_returns_empty_list_not_everything():
+    """trust_history[-days:] with days=0 slices as [0:], returning the full
+    list -- a caller computing a window size that can reach 0 (e.g.
+    min(30, day) on day 0) must get an empty window, not the whole series.
+    """
+    currencies = load_currency_universe()
+    ledger = TrustLedger(currencies, _params())
+
+    ledger.update([ShockEvent(day=0, type=ShockType.DEPEG_EVENT, magnitude=0.08, target_currency="USDT")])
+    ledger.update([])
+
+    assert len(ledger.history("USDT", 30)) > 0  # sanity: history is populated
+    assert ledger.history("USDT", 0) == []
+
+
+def test_update_with_currencies_refreshes_stale_governance_baseline_after_permanent_downgrade():
+    """A governance_downgrade shock permanently lowers governance_score via
+    apply_currency_shock. Once TrustLedger.update() is passed the updated
+    currencies dict, quiet-day recovery must converge toward the NEW (lower)
+    baseline, not the stale original one -- otherwise a "permanent" downgrade
+    would silently self-heal through the trust channel.
+    """
+    currencies = load_currency_universe()
+    params = _params()
+    ledger = TrustLedger(currencies, params)
+    original_baseline = currencies["USDT"].governance_score
+
+    shock = ShockEvent(day=0, type=ShockType.GOVERNANCE_DOWNGRADE, magnitude=0.3, target_currency="USDT")
+    updated_currencies = apply_currency_shock(currencies, shock)
+    new_baseline = updated_currencies["USDT"].governance_score
+    assert new_baseline < original_baseline
+
+    # The downgrade itself is a structural mutation, not a trust-shock event
+    # in the fired_shocks sense for this test -- we drive many quiet days
+    # (empty fired_shocks) with the updated currencies to isolate the
+    # recovery-baseline behavior.
+    for _ in range(500):
+        ledger.update([], currencies=updated_currencies)
+
+    recovered = ledger.trust_score("USDT")
+
+    # With the fix, trust_score converges toward new_baseline and never
+    # exceeds it (even after many quiet days). Without the fix it would
+    # drift back up toward the stale, higher original_baseline.
+    assert recovered == pytest.approx(new_baseline, abs=1e-6)
+    assert recovered < original_baseline

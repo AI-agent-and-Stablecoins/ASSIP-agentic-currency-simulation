@@ -11,6 +11,7 @@ from src.blockchain.chain import ChainConfig
 from src.blockchain.gas_fees import get_gas_fee
 from src.blockchain.liquidity_pools import LiquidityPoolRegistry
 from src.currencies.currency import CurrencyConfig
+from src.economy.trust import TrustLedger
 
 
 class CurrencyChainOption(BaseModel):
@@ -29,6 +30,7 @@ def generate_candidates(
     currencies: dict[str, CurrencyConfig],
     chains: dict[str, ChainConfig],
     liquidity_pools: LiquidityPoolRegistry | None = None,
+    trust_ledger: TrustLedger | None = None,
 ) -> list[CurrencyChainOption]:
     """One candidate per (currency the agent holds a positive balance of) x (chain)."""
     liquidity_pools = liquidity_pools or LiquidityPoolRegistry()
@@ -37,14 +39,21 @@ def generate_candidates(
         if balance <= 0 or symbol not in currencies:
             continue
         currency = currencies[symbol]
+        if trust_ledger is not None:
+            peg_error = trust_ledger.effective_peg_error(symbol, currency.peg_error)
+        else:
+            peg_error = currency.peg_error
         for chain in chains.values():
+            pool_liquidity_score = liquidity_pools.get_liquidity(currency, chain.name)
+            if trust_ledger is not None:
+                pool_liquidity_score = trust_ledger.effective_liquidity_score(symbol, pool_liquidity_score)
             options.append(
                 CurrencyChainOption(
                     currency_symbol=symbol,
                     chain_name=chain.name,
                     governance_score=currency.governance_score,
-                    liquidity_score=liquidity_pools.get_liquidity(currency, chain.name),
-                    peg_error=currency.peg_error,
+                    liquidity_score=pool_liquidity_score,
+                    peg_error=peg_error,
                     gas_fee=get_gas_fee(chain),
                     finality_seconds=chain.finality_seconds,
                     genius_compliant=currency.genius_compliant,
