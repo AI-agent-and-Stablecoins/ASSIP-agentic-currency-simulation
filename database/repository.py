@@ -167,6 +167,9 @@ class AgentRepository:
                 agent_class=agent.agent_class,
                 profile_name=agent.profile_name,
                 risk_profile=agent.risk_profile,
+                currency_zone=agent.currency_zone,
+                assigned_model=agent.assigned_model,
+                cara_coefficient=agent.cara_coefficient,
                 created_at=datetime.now(timezone.utc),
             )
             self.session.add(record)

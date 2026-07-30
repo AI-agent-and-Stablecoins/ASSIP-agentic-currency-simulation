@@ -25,6 +25,9 @@ class AgentRecord(Base):
     agent_class: Mapped[str] = mapped_column(String)
     profile_name: Mapped[str] = mapped_column(String)
     risk_profile: Mapped[str] = mapped_column(String)
+    currency_zone: Mapped[str | None] = mapped_column(String, nullable=True)
+    assigned_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    cara_coefficient: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime)
 
 
