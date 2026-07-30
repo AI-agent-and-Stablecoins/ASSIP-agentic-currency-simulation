@@ -15,6 +15,9 @@ You are an AI seller agent in a simulated digital-currency economy. Decide wheth
 # Macro-economic conditions
 {macro_block}
 
+# History -- how we got here, not just where things stand now
+{history_block}
+
 # Transaction context
 {transaction_block}
 {governance_block}

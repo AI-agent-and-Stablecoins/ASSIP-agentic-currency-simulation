@@ -72,6 +72,23 @@ class TransactionContext(BaseModel):
     exchange_rate_volatility: float | None = None
 
 
+class CurrencyHistory(BaseModel):
+    trust_now: float
+    trust_30d_ago: float
+    trust_min_90d: float
+    trend: str
+    depeg_events_90d: int
+    last_event_days_ago: int | None = None
+    recent_events: list[str] = []
+
+
+class MacroHistory(BaseModel):
+    confidence_now: float
+    confidence_30d_ago: float
+    days_since_last_shock: int | None = None
+    last_shock_type: str | None = None
+
+
 class AgentDecisionContext(BaseModel):
     agent: AgentUtilityContext
     candidates: list[CurrencyChainOption]
@@ -83,6 +100,8 @@ class AgentDecisionContext(BaseModel):
     opponent_offer: NegotiationAction | None = None
     conversation_history: list[str] = []
     governance_prompt_enabled: bool = False
+    currency_history: dict[str, CurrencyHistory] = {}
+    macro_history: MacroHistory | None = None
 
 
 def build_decision_context(
@@ -96,6 +115,8 @@ def build_decision_context(
     conversation_history: list[str] | None = None,
     governance_prompt_enabled: bool = False,
     live_price_snapshots: dict[str, LivePriceSnapshot] | None = None,
+    currency_history: dict[str, CurrencyHistory] | None = None,
+    macro_history: MacroHistory | None = None,
 ) -> AgentDecisionContext:
     candidate_symbols = {candidate.currency_symbol for candidate in candidates}
     relevant_profiles = {
@@ -104,6 +125,11 @@ def build_decision_context(
     relevant_snapshots = {
         symbol: snapshot
         for symbol, snapshot in (live_price_snapshots or {}).items()
+        if symbol in candidate_symbols
+    }
+    relevant_history = {
+        symbol: history
+        for symbol, history in (currency_history or {}).items()
         if symbol in candidate_symbols
     }
     return AgentDecisionContext(
@@ -117,6 +143,8 @@ def build_decision_context(
         opponent_offer=opponent_offer,
         conversation_history=conversation_history or [],
         governance_prompt_enabled=governance_prompt_enabled,
+        currency_history=relevant_history,
+        macro_history=macro_history,
     )
 
 
@@ -203,6 +231,26 @@ def _format_live_price_block(snapshots: dict[str, LivePriceSnapshot]) -> str:
     return "\n".join(lines)
 
 
+def _format_history_block(currency_history: dict[str, CurrencyHistory], macro_history: MacroHistory | None) -> str:
+    lines: list[str] = []
+    for symbol, history in currency_history.items():
+        events = "; ".join(history.recent_events) if history.recent_events else "no notable recent events"
+        lines.append(
+            f"- {symbol}: trust_now={history.trust_now:.2f}, trust_30d_ago={history.trust_30d_ago:.2f}, "
+            f"trust_min_90d={history.trust_min_90d:.2f}, trend={history.trend}, "
+            f"depeg_events_90d={history.depeg_events_90d}, last_event_days_ago={history.last_event_days_ago}. "
+            f"Recent: {events}"
+        )
+    if macro_history is not None:
+        lines.append(
+            f"- Macro: confidence_now={macro_history.confidence_now:.2f}, "
+            f"confidence_30d_ago={macro_history.confidence_30d_ago:.2f}, "
+            f"days_since_last_shock={macro_history.days_since_last_shock}, "
+            f"last_shock_type={macro_history.last_shock_type}"
+        )
+    return "\n".join(lines) if lines else "(no historical data available yet)"
+
+
 def render_prompt(agent_class: str, context: AgentDecisionContext, schema_json: str) -> str:
     template = (PROMPTS_DIR / f"{agent_class}_prompt.txt").read_text(encoding="utf-8")
     fields = {
@@ -211,6 +259,7 @@ def render_prompt(agent_class: str, context: AgentDecisionContext, schema_json: 
         "currency_profiles_block": _format_currency_profiles_block(context.currency_profiles),
         "live_price_block": _format_live_price_block(context.live_price_snapshots),
         "macro_block": _format_macro_block(context.objective_macro_state, context.perceived_macro_state),
+        "history_block": _format_history_block(context.currency_history, context.macro_history),
         "transaction_block": _format_transaction_block(context.transaction_context),
         "governance_block": _GOVERNANCE_EMPHASIS_BLOCK if context.governance_prompt_enabled else "",
         "conversation_block": _format_conversation_block(context.conversation_history),

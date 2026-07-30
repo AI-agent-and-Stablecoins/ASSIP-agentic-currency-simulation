@@ -8,6 +8,7 @@ from src.blockchain.routing_engine import CurrencyChainOption
 from src.economy.macro_state import MacroState
 from src.llm.agent_reasoning import AgentDecisionContext, AgentUtilityContext, TransactionContext, build_decision_context, prompt_version_for, render_prompt
 from src.llm.agent_reasoning import LLMDecisionOutcome, decide
+from src.llm.agent_reasoning import CurrencyHistory, MacroHistory
 from src.llm.decision_adapter import NegotiationAction
 from src.llm.decision_schema import DecisionAction
 from src.llm.llm_router import OPENROUTER_BASE_URL, RetryConfig, load_model_roster
@@ -352,3 +353,37 @@ def test_render_prompt_reports_unavailable_live_price_explicitly_not_silently():
     prompt = render_prompt("buyer", context, "{}")
 
     assert "unavailable" in prompt
+
+
+def test_currency_history_renders_into_the_prompt():
+    context = _base_decision_context()
+    context.currency_history = {
+        "USDT": CurrencyHistory(
+            trust_now=0.41,
+            trust_30d_ago=0.55,
+            trust_min_90d=0.38,
+            trend="declining",
+            depeg_events_90d=2,
+            last_event_days_ago=6,
+            recent_events=["Day 44: brief 1.8% depeg, recovered in 2 days"],
+        )
+    }
+    context.macro_history = MacroHistory(
+        confidence_now=0.9, confidence_30d_ago=0.95, days_since_last_shock=6, last_shock_type="depeg_event"
+    )
+    schema_json = "{}"
+
+    prompt = render_prompt("buyer", context, schema_json)
+
+    assert "declining" in prompt
+    assert "Day 44: brief 1.8% depeg" in prompt
+    assert "days_since_last_shock" in prompt or "6" in prompt
+
+
+def test_currency_history_defaults_to_empty_and_still_renders():
+    context = _base_decision_context()
+    schema_json = "{}"
+
+    prompt = render_prompt("buyer", context, schema_json)
+
+    assert "History" in prompt
