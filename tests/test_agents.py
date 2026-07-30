@@ -1,4 +1,5 @@
 from src.agents.agent_factory import build_agent, load_agent_profiles
+from src.agents.memory import AgentMemory
 from src.blockchain.chain import load_chain_universe
 from src.blockchain.routing_engine import generate_candidates
 from src.currencies.currency import load_currency_universe
@@ -35,3 +36,22 @@ def test_preferences_move_toward_positive_outcome():
     after = agent.preferences.score("USDC")
 
     assert after > before
+
+
+def test_record_narrative_appends_events():
+    memory = AgentMemory()
+
+    memory.record_narrative("On day 5 I held USDC through a banking crisis and lost nothing.")
+
+    assert memory.narrative_events == ["On day 5 I held USDC through a banking crisis and lost nothing."]
+
+
+def test_record_narrative_caps_at_max_events():
+    memory = AgentMemory()
+
+    for day in range(15):
+        memory.record_narrative(f"Event on day {day}")
+
+    assert len(memory.narrative_events) == 10
+    assert memory.narrative_events[0] == "Event on day 5"  # oldest 5 dropped
+    assert memory.narrative_events[-1] == "Event on day 14"

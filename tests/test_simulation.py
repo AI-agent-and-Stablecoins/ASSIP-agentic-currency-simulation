@@ -78,3 +78,21 @@ def test_run_timestep_reports_no_fired_shocks_on_a_quiet_day():
     result = run_timestep(env, day=0, rng=rng)
 
     assert result.fired_shocks == []
+
+
+def test_run_timestep_records_narrative_memory_for_agents_holding_a_shocked_currency():
+    env = _build_env_with_shocks(
+        [ShockEvent(day=0, type=ShockType.DEPEG_EVENT, magnitude=0.08, target_currency="USDT")],
+        {"consumer": 2, "merchant": 2},
+    )
+    consumer = next(a for a in env.agents.values() if a.agent_class == "buyer")
+    consumer.wallet.balances["USDT"] = 100.0
+    rng = random.Random(0)
+
+    result = run_timestep(env, day=0, rng=rng)
+
+    matching = [e for e in result.memory_events if e[0] == consumer.agent_id]
+    assert len(matching) == 1
+    assert matching[0][1] == "Depeg"
+    assert "USDT" in matching[0][2]
+    assert matching[0][2] in consumer.memory.narrative_events
