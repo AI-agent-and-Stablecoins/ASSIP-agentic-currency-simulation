@@ -16,6 +16,15 @@ def real_purchasing_power(wallet: Wallet, rates: ExchangeRateTable, price_index:
     return wallet.total_value_usd(rates) / price_index
 
 
-def advance_price_index(price_index: float, inflation_rate: float) -> float:
-    """Compound the price index forward by one day's inflation rate."""
-    return price_index * (1 + inflation_rate)
+def advance_price_index(price_index: float, annual_inflation_rate: float) -> float:
+    """Compound the price index forward by one day's inflation.
+
+    ``annual_inflation_rate`` is an ANNUAL rate (e.g. 0.02 for 2%/year, the
+    convention used by scenario configs' ``inflation`` field). It is
+    converted to a daily-equivalent rate before compounding so that a
+    365-day run reconstructs the annual rate rather than compounding the
+    annual rate once per day (which would turn a 2%/year "baseline" into
+    ~1349x hyperinflation over a year).
+    """
+    daily_rate = (1 + annual_inflation_rate) ** (1 / 365) - 1
+    return price_index * (1 + daily_rate)

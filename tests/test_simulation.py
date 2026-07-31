@@ -149,9 +149,9 @@ def test_run_timestep_advances_price_index_by_compounding_inflation():
     nominal wallet changes. This fires an INFLATION shock on day 0 (which
     permanently raises env.macro_state.inflation, per apply_shock) and runs
     two days to confirm run_timestep now advances env.price_index by
-    compounding that inflation rate once per day, matching
-    advance_price_index's own compounding formula (already covered in
-    isolation by tests/test_wealth.py).
+    compounding that inflation rate's daily-equivalent rate once per day,
+    matching advance_price_index's own annual-to-daily conversion formula
+    (already covered in isolation by tests/test_wealth.py).
     """
     env = _build_env_with_shocks(
         [ShockEvent(day=0, type=ShockType.INFLATION, magnitude=0.03)],
@@ -164,20 +164,22 @@ def test_run_timestep_advances_price_index_by_compounding_inflation():
     # baseline.yaml's own initial_state.inflation is added to by the shock's
     # magnitude (apply_shock: `updated.inflation += shock.magnitude`), so
     # this doesn't assume a starting inflation of exactly 0.0 -- only that
-    # whatever env.macro_state.inflation ends up as on day 0 is the rate
-    # env.price_index gets compounded by, day over day.
+    # whatever env.macro_state.inflation ends up as on day 0 is the ANNUAL
+    # rate env.price_index gets compounded by (via its daily-equivalent),
+    # day over day.
     inflation_rate = env.macro_state.inflation
+    daily_rate = (1 + inflation_rate) ** (1 / 365) - 1
     price_index_day_1 = env.price_index
-    assert price_index_day_1 == pytest.approx(1.0 * (1 + inflation_rate))
+    assert price_index_day_1 == pytest.approx(1.0 * (1 + daily_rate))
 
     run_timestep(env, day=1, rng=rng)
     # No shock fires on day 1, so inflation is unchanged -- confirms the
     # per-day compounding formula Task 3 already implemented and tested in
-    # isolation (tests/test_wealth.py's test_advance_price_index_compounds_
-    # daily_inflation).
+    # isolation (tests/test_wealth.py's test_advance_price_index_converts_
+    # annual_rate_to_daily_equivalent).
     assert env.macro_state.inflation == pytest.approx(inflation_rate)
     price_index_day_2 = env.price_index
-    assert price_index_day_2 == pytest.approx(price_index_day_1 * (1 + inflation_rate))
+    assert price_index_day_2 == pytest.approx(price_index_day_1 * (1 + daily_rate))
 
 
 def test_environment_build_constructs_a_trust_ledger():

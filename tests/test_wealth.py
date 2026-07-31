@@ -29,12 +29,30 @@ def test_real_purchasing_power_shrinks_as_price_index_rises():
     assert after_inflation < at_baseline
 
 
-def test_advance_price_index_compounds_daily_inflation():
-    index = advance_price_index(1.0, inflation_rate=0.02)
-    assert index == pytest.approx(1.02)
+def test_advance_price_index_converts_annual_rate_to_daily_equivalent():
+    """`inflation_rate` in scenario configs is an ANNUAL rate. One day's
+    compounding must apply the daily-equivalent rate
+    ((1 + annual)**(1/365) - 1), not the annual rate directly -- otherwise
+    a 2%/year "baseline" scenario compounds to ~1349x over a 365-day run.
+    """
+    index = advance_price_index(1.0, annual_inflation_rate=0.02)
+    daily_rate = (1.02) ** (1 / 365) - 1
+    assert index == pytest.approx(1.0 + daily_rate)
+    assert index == pytest.approx(1.0000542, rel=1e-4)
 
-    index_2 = advance_price_index(index, inflation_rate=0.02)
-    assert index_2 == pytest.approx(1.02 * 1.02)
+    index_2 = advance_price_index(index, annual_inflation_rate=0.02)
+    assert index_2 == pytest.approx((1 + daily_rate) ** 2)
+
+
+def test_advance_price_index_365_daily_compoundings_reconstruct_annual_rate():
+    """Compounding the daily-equivalent rate 365 times should return
+    (approximately) to the original annual rate, proving the annual ->
+    daily conversion is correct."""
+    index = 1.0
+    for _ in range(365):
+        index = advance_price_index(index, annual_inflation_rate=0.02)
+
+    assert index == pytest.approx(1.02, rel=1e-6)
 
 
 @pytest.mark.parametrize("pair_name", list(SANDBOX_CURRENCY_PAIRS.keys()))
