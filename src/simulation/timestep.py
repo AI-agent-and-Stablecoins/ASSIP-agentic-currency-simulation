@@ -296,6 +296,37 @@ def _make_llm_decide_closure(
     return _decide
 
 
+def _polygon_ticker(symbol: str) -> str:
+    """Derive this currency's Polygon crypto-aggregate reference ticker.
+
+    No currency config declares a ticker field (checked `CurrencyConfig` and
+    its subclasses in src/currencies/*.py -- none exists), so this task
+    derives one. Every configured currency (configs/currencies/*.yaml) is
+    itself a crypto token -- USD-pegged (USDC, USDT, DAI, FDUSD,
+    Tokenized_Deposits), EUR-pegged (EURC, EURT), and gold-backed (PAXG,
+    XAUT) alike -- so all get the same Polygon crypto-aggregate ticker shape
+    scripts/calibrate_currency_configs.py already uses for the USD-pegged
+    and gold-backed cases (USD_STABLECOIN_TICKERS/GOLD_TOKEN_TICKERS there:
+    "X:USDCUSD", "X:PAXGUSD", "X:XAUTUSD", ...): `X:{symbol}USD`, matching
+    `fetch_live_price`'s own documented example and
+    tests/test_market_intelligence.py's fixtures ("X:USDCUSD").
+
+    A peg-conditional scheme (forex `C:EURUSD` for EUR, `C:XAUUSD` for gold)
+    was considered, since that calibration script also defines
+    FOREX_TICKERS -- but those are reference *peg* rates used to seed
+    macro_state.peg_reference_rates, not per-token prices; that same script
+    still fetches PAXG's and XAUT's own market price via `X:{symbol}USD`,
+    not a forex ticker. Reusing that exact convention for EURC/EURT keeps
+    this mapping uniform rather than inventing an unproven forex-ticker
+    guess for tokens that trade as crypto assets, not as currency pairs.
+    `fetch_live_price` already degrades gracefully (price=None,
+    unavailable_reason set) if Polygon has no data for a derived ticker, so
+    a currency this guess doesn't fit for is a safe no-data default, not a
+    crash.
+    """
+    return f"X:{symbol}USD"
+
+
 def run_timestep(
     env: Environment,
     day: int,
@@ -305,6 +336,7 @@ def run_timestep(
     concession_rate: float = 0.3,
     use_llm: bool = False,
     openrouter_client: httpx.Client | None = None,
+    polygon_client: httpx.Client | None = None,
 ) -> TimestepResult:
     """Run one simulation day.
 
@@ -323,6 +355,22 @@ def run_timestep(
     worse failure mode than an immediate loud error). Every other lifecycle
     step (shock application, marketplace listing, memory recording) is
     shared and unconditional.
+
+    `polygon_client`, if given (only meaningful when use_llm=True), is used
+    to fetch one `LivePriceSnapshot` per currency in `env.currencies` --
+    via `market_intelligence.fetch_live_price` and this module's
+    `_polygon_ticker` mapping -- exactly once at the start of the day, not
+    per-agent or per-negotiation-round, matching the market-data-fetch
+    principle already established for that endpoint. When `polygon_client`
+    is None (the default), `live_price_snapshots` stays empty, same as
+    before this parameter existed. `currency_history`/`macro_history`
+    (`src.economy.history_builder`) are likewise built once per day here --
+    for every currency in `env.currencies` (always a superset of any single
+    round's narrower candidate set, since `generate_candidates` only ever
+    offers currencies from that same universe) and once for the whole
+    macroeconomy respectively -- rather than being rebuilt per agent or per
+    buyer/good pairing, since none of `trust_ledger`/`event_log`/
+    `macro_state` changes within a day once Steps 1-2 above have run.
     """
     if use_llm and openrouter_client is None:
         raise ValueError("openrouter_client is required when use_llm=True")
@@ -353,6 +401,40 @@ def run_timestep(
     # whether any shock fired today (a quiet day is a valid input that
     # still drives recovery toward baseline).
     env.trust_ledger.update(due_shocks, env.currencies)
+
+    # LLM-path environment-level context, built/fetched exactly once per
+    # day (not per agent, not per buyer/good pairing below) -- live prices,
+    # currency history, and macro history are all facts about the day, not
+    # about any one decision. Function-local imports: these pull in httpx
+    # (via src.llm.market_intelligence) and src.llm.agent_reasoning (via
+    # src.economy.history_builder, which imports it for the
+    # CurrencyHistory/MacroHistory types) -- see this file's module
+    # docstring for why those must not be module-level imports.
+    live_price_snapshots = {}
+    currency_history = {}
+    macro_history = None
+    if use_llm:
+        from src.economy.history_builder import build_currency_history, build_macro_history
+        from src.llm.market_intelligence import fetch_live_price
+
+        # env.currencies is always a superset of any single round's
+        # narrower candidate set (generate_candidates only ever offers
+        # currencies drawn from this same universe), so building/fetching
+        # for every currency here -- once -- correctly covers every
+        # buyer/good pairing's build_decision_context call below without
+        # rebuilding anything per agent. build_decision_context itself
+        # already narrows both dicts down to the round's actual candidates
+        # (see its relevant_snapshots/relevant_history filtering).
+        currency_history = {
+            symbol: build_currency_history(env.trust_ledger, env.event_log, symbol, day)
+            for symbol in env.currencies
+        }
+        macro_history = build_macro_history(env, day)
+
+        if polygon_client is not None:
+            live_price_snapshots = {
+                symbol: fetch_live_price(_polygon_ticker(symbol), polygon_client) for symbol in env.currencies
+            }
 
     result = TimestepResult(day=day, fired_shocks=due_shocks)
 
@@ -449,6 +531,9 @@ def run_timestep(
                     env.macro_state,
                     env.macro_state,
                     transaction_context,
+                    live_price_snapshots=live_price_snapshots,
+                    currency_history=currency_history,
+                    macro_history=macro_history,
                 )
                 seller_context = build_decision_context(
                     seller.build_llm_context(),
@@ -457,6 +542,9 @@ def run_timestep(
                     env.macro_state,
                     env.macro_state,
                     transaction_context,
+                    live_price_snapshots=live_price_snapshots,
+                    currency_history=currency_history,
+                    macro_history=macro_history,
                 )
 
                 # Both closures check ACCEPT's funds validity against the buyer's

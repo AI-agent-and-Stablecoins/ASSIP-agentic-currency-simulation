@@ -1,5 +1,6 @@
 import ast
 import importlib
+import json
 import random
 import sys
 
@@ -22,7 +23,7 @@ from src.simulation.simulation_runner import SimulationConfig, SimulationRunner
 from src.simulation.timestep import LLMDecisionRecord, _make_llm_decide_closure, decide_single_model, run_timestep
 from src.transactions.transaction import TransactionStatus
 from src.utils.constants import REPO_ROOT
-from tests.llm_test_helpers import mock_openrouter_client
+from tests.llm_test_helpers import mock_openrouter_client, mock_polygon_client
 
 
 def _build_env_with_shocks(shocks: list[ShockEvent], agent_mix: dict[str, int]) -> Environment:
@@ -776,3 +777,124 @@ def test_simulation_runner_use_llm_false_works_even_if_httpx_cannot_be_imported(
     assert len(result.timesteps) == 2
     all_transactions = [tx for step in result.timesteps for tx in step.transactions]
     assert isinstance(all_transactions, list)
+
+
+# ---------------------------------------------------------------------------
+# Task 9: live Polygon price wiring + CurrencyHistory/MacroHistory wiring gap
+# ---------------------------------------------------------------------------
+
+
+def _capturing_openrouter_client(model_responses: dict[str, dict], captured_prompts: list[str]) -> httpx.Client:
+    """Like tests.llm_test_helpers.mock_openrouter_client, but additionally
+    appends each request's rendered prompt text into `captured_prompts` so a
+    test can assert on the *literal prompt text* render_prompt produced --
+    not just that some function was called. This reads
+    body["messages"][0]["content"], the exact field src.llm.llm_router
+    .call_model sends the rendered prompt as (`messages = [{"role": "user",
+    "content": prompt}]`), so whatever this captures is byte-for-byte what
+    the model would have seen.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        captured_prompts.append(body["messages"][0]["content"])
+        model_id = body["model"]
+        if model_id not in model_responses:
+            return httpx.Response(404, json={"error": f"no mocked response for model {model_id!r}"})
+        content = json.dumps(model_responses[model_id])
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    return httpx.Client(base_url=OPENROUTER_BASE_URL, transport=httpx.MockTransport(handler))
+
+
+def test_run_timestep_llm_path_wires_currency_history_into_rendered_prompt():
+    """Step 0: `build_currency_history`/`build_macro_history` (Task 8) must
+    actually reach the rendered prompt text sent to the model -- not just be
+    computed and dropped on the floor, which is the exact gap Task 8's
+    review found. Fires a DEPEG_EVENT for USDC on day 0 -- recorded into
+    env.event_log at the very top of run_timestep, before the buyer loop
+    runs -- so build_currency_history("USDC", day=0) sees it and produces a
+    `recent_events` entry ("Day 0: depeg_event (magnitude 0.05)"); the
+    prompt actually sent to the (mocked) model must contain that literal
+    text, proving currency_history was threaded through
+    build_decision_context -> render_prompt, not merely constructed.
+    """
+    env = _build_env_with_shocks(
+        [ShockEvent(day=0, type=ShockType.DEPEG_EVENT, magnitude=0.05, target_currency="USDC")],
+        {"consumer": 1, "merchant": 1},
+    )
+    _assign_models(env, "test-vendor/buyer-model", "test-vendor/seller-model")
+
+    captured_prompts: list[str] = []
+    client = _capturing_openrouter_client(
+        {
+            "test-vendor/buyer-model": _decision_json(action="OFFER", currency="USDC", price=90.0),
+            "test-vendor/seller-model": _decision_json(action="ACCEPT", currency="USDC", price=90.0),
+        },
+        captured_prompts,
+    )
+    rng = random.Random(0)
+
+    run_timestep(env, day=0, rng=rng, use_llm=True, openrouter_client=client)
+
+    assert captured_prompts
+    assert any("depeg_event" in prompt and "magnitude 0.05" in prompt for prompt in captured_prompts)
+
+
+def test_run_timestep_with_polygon_client_populates_live_price_snapshots():
+    """`polygon_client` wiring: when supplied, run_timestep fetches one
+    LivePriceSnapshot per tradable currency's reference ticker once per day
+    and threads it into every build_decision_context call for that day --
+    verified the same way as the history test above, via the literal prompt
+    text sent to the (mocked) model, not just that fetch_live_price was
+    invoked.
+    """
+    env = Environment.build("baseline", {"consumer": 1, "merchant": 1})
+    _assign_models(env, "test-vendor/buyer-model", "test-vendor/seller-model")
+    polygon_client = mock_polygon_client({"X:USDCUSD": 1.0002})
+
+    captured_prompts: list[str] = []
+    openrouter_client = _capturing_openrouter_client(
+        {
+            "test-vendor/buyer-model": _decision_json(action="OFFER", currency="USDC", price=90.0),
+            "test-vendor/seller-model": _decision_json(action="ACCEPT", currency="USDC", price=90.0),
+        },
+        captured_prompts,
+    )
+    rng = random.Random(0)
+
+    run_timestep(
+        env,
+        day=0,
+        rng=rng,
+        use_llm=True,
+        openrouter_client=openrouter_client,
+        polygon_client=polygon_client,
+    )
+
+    assert captured_prompts
+    assert any("1.0002" in prompt for prompt in captured_prompts)
+
+
+def test_run_timestep_without_polygon_client_leaves_live_price_snapshots_empty():
+    """Default (polygon_client=None, the existing signature's default)
+    behavior must stay unchanged: no live price section populated for any
+    currency, matching build_decision_context's own default of {}.
+    """
+    env = Environment.build("baseline", {"consumer": 1, "merchant": 1})
+    _assign_models(env, "test-vendor/buyer-model", "test-vendor/seller-model")
+
+    captured_prompts: list[str] = []
+    client = _capturing_openrouter_client(
+        {
+            "test-vendor/buyer-model": _decision_json(action="OFFER", currency="USDC", price=90.0),
+            "test-vendor/seller-model": _decision_json(action="ACCEPT", currency="USDC", price=90.0),
+        },
+        captured_prompts,
+    )
+    rng = random.Random(0)
+
+    run_timestep(env, day=0, rng=rng, use_llm=True, openrouter_client=client)
+
+    assert captured_prompts
+    assert all("(no live price data available)" in prompt for prompt in captured_prompts)
