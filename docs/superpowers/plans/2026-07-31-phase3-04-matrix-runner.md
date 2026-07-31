@@ -768,15 +768,21 @@ git commit -m "feat: wire EventLog recording and add CurrencyHistory/MacroHistor
 
 ---
 
-### Task 9: Live Polygon price wiring
+### Task 9: Live Polygon price wiring + closing the CurrencyHistory/MacroHistory wiring gap
+
+**Amended after Task 8's review:** Task 8 built `build_currency_history`/`build_macro_history` (`src/economy/history_builder.py`) but neither that task nor any other task in this plan wires their output into `build_decision_context`'s actual call sites in `timestep.py`'s LLM path — confirmed a genuine dangling gap, not by design. Since this task already touches those exact call sites to add `live_price_snapshots`, it also adds `currency_history`/`macro_history` at the same time, same call sites, same pattern.
 
 **Files:**
-- Modify: `src/simulation/timestep.py` (fetch live prices once per day, pass into decision contexts)
+- Modify: `src/simulation/timestep.py` (fetch live prices once per day; also build and pass `currency_history`/`macro_history` into decision contexts)
 - Test: extend `tests/test_simulation.py`
 
 **Interfaces:**
-- Consumes: `market_intelligence.fetch_live_price`/`build_polygon_client` (existing), `tests/llm_test_helpers.py`'s `mock_polygon_client` (Task 1).
-- Produces: `run_timestep(..., polygon_client: httpx.Client | None = None)` — when `use_llm=True` and `polygon_client` is provided, fetches one `LivePriceSnapshot` per tradable currency's reference ticker once at the start of the day (not per-agent), passed into every `build_decision_context` call that day via `live_price_snapshots`. When `polygon_client` is `None` (default), `live_price_snapshots` stays empty (existing behavior — `build_decision_context` already defaults this to `{}`).
+- Consumes: `market_intelligence.fetch_live_price`/`build_polygon_client` (existing), `tests/llm_test_helpers.py`'s `mock_polygon_client` (Task 1), `build_currency_history`/`build_macro_history` (Task 8, `src/economy/history_builder.py`).
+- Produces: `run_timestep(..., polygon_client: httpx.Client | None = None)` — when `use_llm=True` and `polygon_client` is provided, fetches one `LivePriceSnapshot` per tradable currency's reference ticker once at the start of the day (not per-agent), passed into every `build_decision_context` call that day via `live_price_snapshots`. When `polygon_client` is `None` (default), `live_price_snapshots` stays empty (existing behavior — `build_decision_context` already defaults this to `{}`). **Also:** every `build_decision_context` call in the `use_llm=True` path now passes `currency_history={symbol: build_currency_history(env.trust_ledger, env.event_log, symbol, day) for symbol in <candidate currency symbols for that agent>}` and `macro_history=build_macro_history(env, day)` — built once per day (macro_history) / once per candidate-set (currency_history), not recomputed per agent from scratch if avoidable, matching the same "fetch once per day, not per agent" principle as live prices.
+
+- [ ] **Step 0: Wire CurrencyHistory/MacroHistory into both LLM-path build_decision_context call sites**
+
+Find both `build_decision_context(...)` calls added by Task 5 inside the `use_llm=True` branch (buyer-side and seller-side context construction). Add `currency_history=...`/`macro_history=...` keyword arguments to both, computed via Task 8's `build_currency_history`/`build_macro_history`. Add a test to `tests/test_simulation.py` confirming a rendered prompt (via the real `render_prompt` call inside the LLM path, using `mock_openrouter_client`) contains a currency-history detail (e.g. a `trend` value or a `recent_events` string) that only appears if `currency_history` was actually populated and passed through — not just that the function was called, but that its output reaches the final prompt text.
 
 - [ ] **Step 1: Confirm the ticker-per-currency mapping**
 
