@@ -1158,3 +1158,61 @@ def test_build_from_population_uses_supplied_currencies_when_given():
     )
 
     assert len(env.currencies) == 2
+
+
+# ---------------------------------------------------------------------------
+# Review of Task 13 (d8f6568): mid-negotiation ACCEPT funds check compared
+# USD-scale decision.price against native-unit wallet_balances directly.
+# `_make_llm_decide_closure`'s buyer_wallet_balances (passed to
+# adapt_decision -> validate_decision as the funds-check input) is native
+# units of each currency (straight from agent.wallet.balances), but
+# decision.price is USD-scale by the negotiation convention Task 13
+# established. For a gold-pegged currency (~2400 USD/unit), a realistic
+# small native-unit balance -- comfortably sufficient in USD terms -- was
+# spuriously rejected as "insufficient funds" because e.g. 1.0 (native PAXG)
+# < 110.0 (USD-scale price), even though 1.0 PAXG is worth ~2400 USD.
+# ---------------------------------------------------------------------------
+
+
+def test_run_timestep_llm_path_accepts_realistic_gold_balance_against_usd_scale_price():
+    """Buyer holds ONLY a realistic, modest 1.0 PAXG balance (~2400 USD) --
+    comfortably enough to cover a ~110 USD trade, but the pre-fix raw
+    comparison (1.0 available < 110.0 USD-scale price) would spuriously
+    reject the ACCEPT as "insufficient funds" and end the negotiation in a
+    synthetic WALK_AWAY with zero settlements. Confirms the funds check now
+    converts wallet_balances to USD before comparing against decision.price,
+    so the trade settles instead.
+    """
+    env = Environment.build("baseline", {"consumer": 1, "merchant": 1})
+    env.goods = [Good(name="test_good", category="test", base_price_usd=100.0)]
+    _assign_models(env, "test-vendor/buyer-model", "test-vendor/seller-model")
+    buyer = next(a for a in env.agents.values() if a.agent_class == "buyer")
+    seller = next(a for a in env.agents.values() if a.agent_class == "seller")
+    buyer.wallet.balances = {"PAXG": 1.0}  # ~2400 USD equivalent -- realistic, not "ample"
+
+    asking_price = seller.asking_price(true_price(env.goods[0]))  # 100.0 * 1.10 = 110.0
+
+    client = mock_openrouter_client(
+        {
+            "test-vendor/buyer-model": _decision_json(action="OFFER", currency="PAXG", price=asking_price),
+            "test-vendor/seller-model": _decision_json(action="ACCEPT", currency="PAXG", price=asking_price),
+        }
+    )
+    rng = random.Random(0)
+
+    result = run_timestep(env, day=0, rng=rng, use_llm=True, openrouter_client=client)
+
+    settled = [tx for tx in result.transactions if tx.status == TransactionStatus.SETTLED]
+    assert len(settled) > 0, (
+        "expected the ~110 USD trade to settle against a realistic 1.0 PAXG "
+        "(~2400 USD) balance -- got 0 settlements, meaning the funds check "
+        "is still comparing USD-scale price against native-unit balance"
+    )
+    for tx in settled:
+        assert tx.currency_symbol == "PAXG"
+    # No negotiation should have failed with the stale "insufficient funds"
+    # reasoning that the raw native-vs-USD comparison bug produced (the
+    # actual pre-fix failure_reason was
+    # "still invalid after one correction: Insufficient funds").
+    for record in result.llm_decisions:
+        assert "Insufficient funds" not in (record.failure_reason or "")

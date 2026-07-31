@@ -583,6 +583,20 @@ def run_timestep(
                 # wallet, never the seller's -- the buyer is always the payer, so
                 # a seller ACCEPTing a currency it doesn't itself hold is
                 # irrelevant to whether the trade is affordable.
+                #
+                # decision.price is USD-scale (the negotiation convention this
+                # fix chain established -- see d8f6568), but
+                # buyer_context.agent.wallet_balances is native currency units
+                # (used as-is for the prompt's own wallet display, which must
+                # stay untouched). Converting to USD here only affects the
+                # funds-CHECK input: without it, a gold-pegged buyer with a
+                # realistic e.g. {"PAXG": 1.0} balance would be rejected as
+                # "insufficient funds" against a ~100 USD price, since
+                # 1.0 < 100.0 even though 1.0 PAXG is worth ~2400 USD.
+                buyer_wallet_balances_usd = {
+                    symbol: env.exchange_rates.convert(balance, symbol, "USD")
+                    for symbol, balance in buyer_context.agent.wallet_balances.items()
+                }
                 buyer_decide = _make_llm_decide_closure(
                     buyer,
                     "buyer",
@@ -593,7 +607,7 @@ def run_timestep(
                     supported_chains,
                     listing.true_price,
                     result.llm_decisions,
-                    buyer_wallet_balances=buyer_context.agent.wallet_balances,
+                    buyer_wallet_balances=buyer_wallet_balances_usd,
                 )
                 seller_decide = _make_llm_decide_closure(
                     seller,
@@ -605,7 +619,7 @@ def run_timestep(
                     supported_chains,
                     listing.true_price,
                     result.llm_decisions,
-                    buyer_wallet_balances=buyer_context.agent.wallet_balances,
+                    buyer_wallet_balances=buyer_wallet_balances_usd,
                 )
 
                 session = run_llm_negotiation(
