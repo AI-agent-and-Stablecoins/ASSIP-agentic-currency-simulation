@@ -315,7 +315,7 @@ def run_timestep(
     per-agent LLM decision (`decide_single_model`) and a full LLM-vs-LLM
     negotiation (`run_llm_negotiation`) in place of that deterministic
     step -- `openrouter_client` is required in that case (raises ValueError
-    if None), as is every active agent having a non-None `assigned_model`
+    if None), as is every agent having a non-None `assigned_model`
     (raises ValueError naming the offending agent(s) otherwise -- silently
     calling `decide_single_model(model_id=None, ...)` would just produce a
     quiet zero-transaction run via synthetic WALK_AWAYs, which is a much
@@ -420,7 +420,7 @@ def run_timestep(
                 }
                 # NOTE: this is buyer-vs-seller currency-zone mismatch, known
                 # before any settlement currency is chosen -- a related but
-                # distinct concept from Task 9's upcoming FX-tax "cross-border"
+                # distinct concept from Task 6's FX conversion tax "cross-border"
                 # check, which will compare the settlement currency's zone
                 # against the buyer's currency_zone (computed later, once a
                 # currency is actually agreed). Do not conflate the two names.

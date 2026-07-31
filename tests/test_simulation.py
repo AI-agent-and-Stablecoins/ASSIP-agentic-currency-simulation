@@ -608,3 +608,58 @@ def test_negotiation_conversation_history_includes_both_sides_offers_by_round_th
     assert session.status == NegotiationStatus.MAX_ROUNDS_REACHED
     assert any(buyer.agent_id in line for line in seller_context.conversation_history)
     assert any(seller.agent_id in line for line in seller_context.conversation_history)
+
+
+def test_simulation_runner_module_has_no_top_level_httpx_import():
+    """Fix 1 (Critical), static check: sandbox/sandbox_launcher.py's E2B
+    provisioning installs only `pydantic sqlalchemy pyyaml python-dotenv
+    pandas` (no httpx) and then imports simulation_runner for a purely
+    deterministic (use_llm=False) run. Any module-level `import httpx`
+    line in simulation_runner.py would break that path even though it
+    never touches the LLM code. This inspects the file's own module-level
+    AST (not the live, possibly-already-cached sys.modules) so it can't be
+    fooled by other test files having already imported httpx first.
+    """
+    source = (REPO_ROOT / "src" / "simulation" / "simulation_runner.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    forbidden_modules = {"httpx"}
+
+    for node in tree.body:  # module level only -- deliberately not ast.walk
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert alias.name not in forbidden_modules, (
+                    f"module-level `import {alias.name}` reintroduces the sandbox-breaking hard import"
+                )
+        elif isinstance(node, ast.ImportFrom):
+            assert node.module not in forbidden_modules, (
+                f"module-level `from {node.module} import ...` reintroduces the sandbox-breaking hard import"
+            )
+
+
+def test_simulation_runner_use_llm_false_works_even_if_httpx_cannot_be_imported(monkeypatch):
+    """Fix 1 (Critical), behavioral check: reproduce the actual sandbox
+    failure mode by making a fresh `import httpx` raise, then confirming a
+    freshly (re-)imported simulation_runner module still works end-to-end for a
+    deterministic run. `sys.modules["httpx"] = None` is the standard trick
+    for forcing ImportError on `import httpx` (see Python docs on
+    sys.modules); monkeypatch restores the original entries automatically.
+    """
+    monkeypatch.setitem(sys.modules, "httpx", None)
+    monkeypatch.delitem(sys.modules, "src.simulation.simulation_runner", raising=False)
+    # Also clear timestep since it's imported by simulation_runner
+    monkeypatch.delitem(sys.modules, "src.simulation.timestep", raising=False)
+
+    module = importlib.import_module("src.simulation.simulation_runner")
+
+    config = module.SimulationConfig(
+        agent_mix={"consumer": 2, "merchant": 2},
+        num_days=2,
+        scenario="baseline",
+        random_seed=42,
+    )
+    result = module.SimulationRunner().run(config)  # use_llm=False (default)
+
+    assert len(result.timesteps) == 2
+    all_transactions = [tx for step in result.timesteps for tx in step.transactions]
+    assert isinstance(all_transactions, list)

@@ -3,12 +3,22 @@
 Persistence (lifecycle step 14) is not hardwired here -- callers (e2b's
 sandbox_launcher, or a notebook/script) pass an on_timestep callback that
 writes to the database, so this module has no dependency on database/.
+
+`httpx` is not imported at module level: sandbox/sandbox_launcher.py
+provisions its E2B sandbox with only `pydantic sqlalchemy pyyaml
+python-dotenv pandas` (no `httpx`) and then imports this module for a
+purely deterministic (use_llm=False) run. A module-level `import httpx`
+here would break that path even though it never touches the LLM code.
+Instead, `httpx.Client` type hints use lazy evaluation via `from __future__
+import annotations` (annotations are never evaluated at runtime) -- see
+src.simulation.timestep for the same pattern and rationale.
 """
+
+from __future__ import annotations
 
 import random
 from typing import Callable, Optional
 
-import httpx
 from pydantic import BaseModel, Field
 
 from src.simulation.environment import Environment
