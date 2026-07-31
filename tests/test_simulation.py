@@ -100,6 +100,11 @@ def test_run_timestep_records_narrative_memory_for_agents_holding_a_shocked_curr
     assert matching[0][2] in consumer.memory.narrative_events
 
 
+def test_environment_starts_with_price_index_of_one():
+    env = Environment.build("baseline", {"consumer": 2, "merchant": 2})
+    assert env.price_index == 1.0
+
+
 def test_environment_build_constructs_a_trust_ledger():
     env = Environment.build("baseline", {"consumer": 2, "merchant": 2})
 

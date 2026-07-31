@@ -46,6 +46,7 @@ class Environment:
         self.ledger = Ledger()
         self.event_queue = EventQueue(scenario.shocks)
         self.exchange_rates = ExchangeRateTable(currencies, self.macro_state.peg_reference_rates)
+        self.price_index: float = 1.0
 
     def refresh_exchange_rates(self) -> None:
         """Call after macro_state changes (e.g. a shock) to rebuild derived rate lookups."""
