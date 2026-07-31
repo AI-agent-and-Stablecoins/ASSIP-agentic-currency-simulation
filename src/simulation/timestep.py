@@ -632,12 +632,30 @@ def run_timestep(
                 # persistence, or hallucination detection.
                 tx.expected_value = listing.true_price
 
+                # Task 13: build_transaction_from_negotiation stores the
+                # LLM's raw negotiated price number verbatim -- USD-scale, by
+                # the same convention the deterministic path below uses (and
+                # that the tx.expected_value overwrite right above already
+                # relies on: listing.true_price is a USD number). settle()/
+                # validate_transaction, however, treat tx.paid_value as a
+                # literal NATIVE-UNIT amount of tx.currency_symbol. Without
+                # this conversion, any non-USD-pegged settlement currency
+                # (e.g. gold-backed PAXG/XAUT at ~2400 USD/unit) would try to
+                # debit the raw USD number's worth of *units* -- ~2400x too
+                # much -- and always fail "insufficient funds".
+                tx.paid_value = env.exchange_rates.convert(tx.paid_value, "USD", tx.currency_symbol)
+
                 # Task 6: cross-border FX conversion tax -- compared against
                 # the settlement currency's zone (USD/EUR; gold-backed
                 # currencies are zone-neutral) vs. the buyer's own
                 # currency_zone (None for legacy count-based agents, which
                 # never pay this tax). Computed on the final accepted price,
-                # same as the deterministic path below.
+                # same as the deterministic path below. Must run AFTER the
+                # USD->native-unit conversion above: settle() debits
+                # `tx.paid_value + tx.fx_tax_paid` together in
+                # tx.currency_symbol native units, so fx_tax_paid has to be a
+                # percentage of the same native-unit paid_value, not of the
+                # pre-conversion USD number.
                 tx.fx_tax_paid = compute_fx_tax(
                     tx.paid_value, env.currencies[tx.currency_symbol], buyer.currency_zone, fx_params.fx_tax_rate
                 )
@@ -679,13 +697,27 @@ def run_timestep(
                 if agreed_price is None:
                     continue
 
+                # Task 13: negotiate() (like the LLM path) produces a
+                # USD-scale price -- true_price()/asking_price()/
+                # opening_offer_price() are all computed in USD. Convert to
+                # the settlement currency's native units before this becomes
+                # Transaction.paid_value, which settle()/validate_transaction
+                # treat as a literal native-unit amount of chosen
+                # .currency_symbol. Without this, any non-USD-pegged
+                # currency (e.g. gold-backed PAXG/XAUT) would try to debit
+                # the raw USD number's worth of *units* instead of its
+                # actual USD-equivalent worth.
+                native_paid_value = env.exchange_rates.convert(agreed_price, "USD", chosen.currency_symbol)
+
                 # Task 6: cross-border FX conversion tax (see the LLM-path
                 # comment above for the full rationale) -- computed here on
                 # the same env.currencies[chosen.currency_symbol]/
                 # buyer.currency_zone/fx_params.fx_tax_rate inputs so both
                 # paths apply identical FX-tax semantics before settlement.
+                # Must run AFTER the USD->native-unit conversion above, for
+                # the same unit-consistency reason given in the LLM path.
                 fx_tax_paid = compute_fx_tax(
-                    agreed_price, env.currencies[chosen.currency_symbol], buyer.currency_zone, fx_params.fx_tax_rate
+                    native_paid_value, env.currencies[chosen.currency_symbol], buyer.currency_zone, fx_params.fx_tax_rate
                 )
 
                 tx = Transaction(
@@ -696,7 +728,7 @@ def run_timestep(
                     chain_name=chosen.chain_name,
                     gas_fee=chosen.gas_fee,
                     expected_value=listing.true_price,
-                    paid_value=agreed_price,
+                    paid_value=native_paid_value,
                     timestep=day,
                     fx_tax_paid=fx_tax_paid,
                 )

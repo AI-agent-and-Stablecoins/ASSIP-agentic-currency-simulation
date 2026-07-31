@@ -14,7 +14,9 @@ from src.economy.trust import TrustLedger
 from src.llm.agent_reasoning import AgentDecisionContext, AgentUtilityContext, TransactionContext, build_decision_context
 from src.llm.decision_adapter import NegotiationAction
 from src.llm.decision_schema import DecisionAction
+from src.llm.hallucination_detector import HallucinationDirection
 from src.llm.llm_router import OPENROUTER_BASE_URL
+from src.market.goods import Good
 from src.market.pricing_engine import true_price
 from src.negotiation.llm_negotiation_engine import NegotiationSession, NegotiationStatus, run_llm_negotiation
 from src.simulation.environment import Environment
@@ -576,6 +578,159 @@ def test_run_timestep_llm_path_has_zero_fx_tax_when_buyer_zone_is_none():
     settled = [tx for tx in result.transactions if tx.status == TransactionStatus.SETTLED]
     assert len(settled) > 0
     assert all(tx.fx_tax_paid == 0.0 for tx in settled)
+
+
+# ---------------------------------------------------------------------------
+# Task 13: settlement-currency conversion for non-USD-pegged currencies
+#
+# Prices flow through true_price() -> negotiate()/LLM negotiation as raw USD
+# numbers, but validate_transaction/settle() previously treated
+# Transaction.paid_value as a literal NATIVE-UNIT amount of
+# tx.currency_symbol with zero currency conversion. For a gold-pegged
+# currency like PAXG (~2400 USD/unit, baseline.yaml's peg_reference_rates
+# XAU=2400.0), a ~20-200 USD-priced good would try to debit ~20-200 *units*
+# of PAXG (~48,000-480,000 USD) instead of the correct ~0.008-0.09 units --
+# always failing "insufficient funds" for any currency that isn't pegged
+# 1:1 to USD, even with an entirely adequate real-world balance.
+# ---------------------------------------------------------------------------
+
+
+def test_run_timestep_deterministic_path_converts_paid_value_to_native_units_for_gold_pegged_currency():
+    """Buyer holds ONLY a modest, realistic 1.0 PAXG balance (~2400 USD) --
+    comfortably enough to cover the correct native-unit amount for any of
+    the ~20-200 USD goods, but nowhere near enough to cover the old bug's
+    inflated debit (which would treat the raw ~20-200 USD price as ~20-200
+    *units* of PAXG). Holding only PAXG also forces
+    generate_candidates/choose_currency_and_chain to have no other option.
+    """
+    env = Environment.build("baseline", {"consumer": 1, "merchant": 1})
+    buyer = next(a for a in env.agents.values() if a.agent_class == "buyer")
+    buyer.wallet.balances = {"PAXG": 1.0}
+    rng = random.Random(0)
+
+    result = run_timestep(env, day=0, rng=rng)
+
+    settled = [tx for tx in result.transactions if tx.status == TransactionStatus.SETTLED]
+    assert len(settled) > 0, "expected at least one settled PAXG transaction with a realistic 1.0 PAXG balance"
+    for tx in settled:
+        assert tx.currency_symbol == "PAXG"
+        # Native-unit converted amount (~0.008-0.1 PAXG for a $20-$200 good
+        # at 2400 USD/PAXG) -- never the raw USD-scale negotiated price
+        # (~20-200), which is what the bug used to store here.
+        assert 0.0 < tx.paid_value < 1.0
+    # The buyer's wallet should still hold the bulk of its original 1.0
+    # PAXG -- proof the debits were small native-unit amounts, not ~20-200
+    # units each (which would have emptied -- and then blocked -- the
+    # wallet after the very first good).
+    assert buyer.wallet.balances["PAXG"] > 0.5
+
+
+def test_run_timestep_llm_path_converts_paid_value_to_native_units_for_gold_pegged_currency():
+    """Same bug, LLM-vs-LLM negotiation path: build_transaction_from_negotiation
+    stores the LLM's raw negotiated price number verbatim (USD-scale, by the
+    same convention the deterministic path uses and that
+    tx.expected_value's forced USD overwrite right after it relies on).
+    Confirms the settled Transaction.paid_value ends up in PAXG native
+    units, not the raw USD number the model actually said.
+    """
+    env = Environment.build("baseline", {"consumer": 1, "merchant": 1})
+    env.goods = [Good(name="test_good", category="test", base_price_usd=100.0)]
+    _assign_models(env, "test-vendor/buyer-model", "test-vendor/seller-model")
+    buyer = next(a for a in env.agents.values() if a.agent_class == "buyer")
+    seller = next(a for a in env.agents.values() if a.agent_class == "seller")
+    buyer.wallet.balances = {"PAXG": 1000.0}  # ample native-unit balance either way
+
+    asking_price = seller.asking_price(true_price(env.goods[0]))  # 100.0 * 1.10 = 110.0
+
+    client = mock_openrouter_client(
+        {
+            "test-vendor/buyer-model": _decision_json(action="OFFER", currency="PAXG", price=asking_price),
+            "test-vendor/seller-model": _decision_json(action="ACCEPT", currency="PAXG", price=asking_price),
+        }
+    )
+    rng = random.Random(0)
+
+    result = run_timestep(env, day=0, rng=rng, use_llm=True, openrouter_client=client)
+
+    settled = [tx for tx in result.transactions if tx.status == TransactionStatus.SETTLED]
+    assert len(settled) > 0
+    expected_native_paid_value = asking_price / 2400.0  # baseline.yaml's peg_reference_rates XAU=2400.0
+    for tx in settled:
+        assert tx.currency_symbol == "PAXG"
+        assert tx.paid_value == pytest.approx(expected_native_paid_value, rel=1e-6)
+        # Guards directly against the raw-USD-number-stored-as-native-units bug.
+        assert tx.paid_value != pytest.approx(asking_price)
+
+
+def test_run_timestep_deterministic_path_fx_tax_matches_native_unit_paid_value_scale():
+    """Ordering fix: fx_tax_paid must be computed on the CONVERTED
+    (native-unit) paid_value, not the raw pre-conversion USD number --
+    settle()'s `tx.paid_value + tx.fx_tax_paid` debits both in
+    tx.currency_symbol native units, so mixing scales there would be
+    nonsensical. EUR's peg_reference_rate is bumped to 5.0 here (vs.
+    baseline.yaml's 1.08) so a same-scale-vs-mixed-scale bug produces an
+    unmistakable ~5x discrepancy rather than a marginal, easy-to-miss one.
+    """
+    env = Environment.build("baseline", {"consumer": 1, "merchant": 1})
+    env.macro_state.peg_reference_rates["EUR"] = 5.0
+    buyer = next(a for a in env.agents.values() if a.agent_class == "buyer")
+    buyer.wallet.balances = {"EURC": 100000.0}
+    buyer.currency_zone = "USD"  # cross-zone vs. EURC's EUR zone -> fx tax applies
+    rng = random.Random(0)
+
+    result = run_timestep(env, day=0, rng=rng)
+
+    settled = [tx for tx in result.transactions if tx.status == TransactionStatus.SETTLED]
+    assert len(settled) > 0
+    for tx in settled:
+        assert tx.currency_symbol == "EURC"
+        assert tx.fx_tax_paid > 0.0
+        # A EUR peg of 5.0 vs. USD's 1.0 means USD->EURC divides by 5 --
+        # the converted native-unit paid_value must be well under what the
+        # raw pre-conversion USD number would have been (up to ~250 for
+        # baseline's marked-up goods).
+        assert tx.paid_value < 60.0
+        # fx_tax_paid must be a percentage of the SAME native-unit
+        # paid_value that gets debited alongside it in settle() -- not a
+        # percentage of the pre-conversion USD number.
+        assert tx.fx_tax_paid == pytest.approx(tx.paid_value * 0.0002, rel=1e-9)
+
+
+def test_run_timestep_llm_path_hallucination_detection_stays_unit_consistent_for_gold_pegged_currency():
+    """detect_hallucination(expected_value, paid_value, ...) compares a USD
+    listing.true_price against the LLM's own raw per-round proposed price
+    (NegotiationAction.price) -- both USD-scale numbers, by convention, and
+    this comparison happens mid-negotiation, before Transaction.paid_value
+    is ever converted to native units. Confirms that a model paying exactly
+    the fair (USD-scale) price for a PAXG-settled trade is classified
+    ACCURATE (~0% error), not a spurious ~100% "underpayment" artifact that
+    would appear if this comparison were ever fed a native-unit (post
+    -conversion) paid_value against a USD expected_value.
+    """
+    env = Environment.build("baseline", {"consumer": 1, "merchant": 1})
+    env.goods = [Good(name="test_good", category="test", base_price_usd=100.0)]
+    _assign_models(env, "test-vendor/buyer-model", "test-vendor/seller-model")
+    buyer = next(a for a in env.agents.values() if a.agent_class == "buyer")
+    seller = next(a for a in env.agents.values() if a.agent_class == "seller")
+    buyer.wallet.balances = {"PAXG": 1000.0}
+
+    asking_price = seller.asking_price(true_price(env.goods[0]))  # 110.0
+
+    client = mock_openrouter_client(
+        {
+            "test-vendor/buyer-model": _decision_json(action="OFFER", currency="PAXG", price=asking_price),
+            "test-vendor/seller-model": _decision_json(action="ACCEPT", currency="PAXG", price=asking_price),
+        }
+    )
+    rng = random.Random(0)
+
+    result = run_timestep(env, day=0, rng=rng, use_llm=True, openrouter_client=client)
+
+    hallucinations = [r.hallucination for r in result.llm_decisions if r.hallucination is not None]
+    assert hallucinations
+    for h in hallucinations:
+        assert h.direction == HallucinationDirection.ACCURATE
+        assert h.percentage_error == pytest.approx(0.0, abs=1e-6)
 
 
 # ---------------------------------------------------------------------------
