@@ -384,6 +384,97 @@ def test_run_timestep_with_use_llm_false_is_unchanged_from_before():
 
 
 # ---------------------------------------------------------------------------
+# Task 6: cross-border FX conversion tax
+# ---------------------------------------------------------------------------
+
+
+def test_run_timestep_deterministic_path_applies_fx_tax_on_cross_zone_settlement():
+    """Buyer holds only EURC (so choose_currency_and_chain has no other
+    option) and is tagged currency_zone="USD" -- a cross-zone settlement --
+    so every settled transaction must carry a nonzero fx_tax_paid equal to
+    paid_value * fx_tax_rate (0.0002), and the buyer's wallet must be
+    debited price + tax (verified via settle()'s own tests; here we check
+    the Transaction fields run_timestep produces).
+    """
+    env = Environment.build("baseline", {"consumer": 1, "merchant": 1})
+    buyer = next(a for a in env.agents.values() if a.agent_class == "buyer")
+    buyer.wallet.balances = {"EURC": 100000.0}
+    buyer.currency_zone = "USD"
+    rng = random.Random(0)
+
+    result = run_timestep(env, day=0, rng=rng)
+
+    settled = [tx for tx in result.transactions if tx.status == TransactionStatus.SETTLED]
+    assert len(settled) > 0
+    for tx in settled:
+        assert tx.currency_symbol == "EURC"
+        assert tx.fx_tax_paid == pytest.approx(tx.paid_value * 0.0002)
+        assert tx.fx_tax_paid > 0.0
+
+
+def test_run_timestep_deterministic_path_has_zero_fx_tax_when_buyer_zone_is_none():
+    """Environment.build's count-based path never sets currency_zone -- the
+    default None must mean zero FX tax, not a crash.
+    """
+    env = Environment.build("baseline", {"consumer": 2, "merchant": 2})
+    rng = random.Random(0)
+
+    result = run_timestep(env, day=0, rng=rng)
+
+    settled = [tx for tx in result.transactions if tx.status == TransactionStatus.SETTLED]
+    assert len(settled) > 0
+    assert all(tx.fx_tax_paid == 0.0 for tx in settled)
+
+
+def test_run_timestep_llm_path_applies_fx_tax_on_cross_zone_settlement():
+    """Same cross-zone setup as the deterministic-path test above, but
+    driving the LLM-vs-LLM negotiation path (use_llm=True) so both
+    Transaction-construction call sites in run_timestep are covered.
+    """
+    env = Environment.build("baseline", {"consumer": 1, "merchant": 1})
+    buyer = next(a for a in env.agents.values() if a.agent_class == "buyer")
+    buyer.wallet.balances = {"EURC": 100000.0}
+    buyer.currency_zone = "USD"
+    _assign_models(env, "test-vendor/buyer-model", "test-vendor/seller-model")
+
+    client = mock_openrouter_client(
+        {
+            "test-vendor/buyer-model": _decision_json(action="OFFER", currency="EURC", price=90.0),
+            "test-vendor/seller-model": _decision_json(action="ACCEPT", currency="EURC", price=90.0),
+        }
+    )
+    rng = random.Random(0)
+
+    result = run_timestep(env, day=0, rng=rng, use_llm=True, openrouter_client=client)
+
+    settled = [tx for tx in result.transactions if tx.status == TransactionStatus.SETTLED]
+    assert len(settled) > 0
+    for tx in settled:
+        assert tx.currency_symbol == "EURC"
+        assert tx.fx_tax_paid == pytest.approx(tx.paid_value * 0.0002)
+        assert tx.fx_tax_paid > 0.0
+
+
+def test_run_timestep_llm_path_has_zero_fx_tax_when_buyer_zone_is_none():
+    env = Environment.build("baseline", {"consumer": 2, "merchant": 2})
+    _assign_models(env, "test-vendor/buyer-model", "test-vendor/seller-model")
+
+    client = mock_openrouter_client(
+        {
+            "test-vendor/buyer-model": _decision_json(action="OFFER", price=90.0),
+            "test-vendor/seller-model": _decision_json(action="ACCEPT", price=90.0),
+        }
+    )
+    rng = random.Random(0)
+
+    result = run_timestep(env, day=0, rng=rng, use_llm=True, openrouter_client=client)
+
+    settled = [tx for tx in result.transactions if tx.status == TransactionStatus.SETTLED]
+    assert len(settled) > 0
+    assert all(tx.fx_tax_paid == 0.0 for tx in settled)
+
+
+# ---------------------------------------------------------------------------
 # Task 5 review fixes
 # ---------------------------------------------------------------------------
 

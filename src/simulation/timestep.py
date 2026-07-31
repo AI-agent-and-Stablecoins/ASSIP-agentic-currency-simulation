@@ -36,6 +36,7 @@ from src.agents.base_agent import BaseAgent
 from src.agents.buyer_agent import BuyerAgent
 from src.agents.seller_agent import SellerAgent
 from src.blockchain.routing_engine import generate_candidates
+from src.economy.fx_tax import compute_fx_tax, load_fx_params
 from src.economy.shocks import ShockEvent, ShockType, apply_currency_shock, apply_shock
 from src.llm.decision_adapter import DecisionValidationError, NegotiationAction, adapt_decision
 from src.llm.decision_schema import Decision, DecisionAction
@@ -334,6 +335,11 @@ def run_timestep(
                 f"agent(s) have assigned_model=None: {unassigned}"
             )
 
+    # Loaded once per timestep (cheap, deterministic YAML read) and reused for
+    # every transaction below -- both the deterministic and LLM-driven paths
+    # apply the same cross-border FX conversion tax (Task 6).
+    fx_params = load_fx_params()
+
     # Steps 1-2: update macroeconomic state, currency attributes, and prices
     # from any shocks due today.
     due_shocks = env.event_queue.pop_due(day)
@@ -505,6 +511,16 @@ def run_timestep(
                 # persistence, or hallucination detection.
                 tx.expected_value = listing.true_price
 
+                # Task 6: cross-border FX conversion tax -- compared against
+                # the settlement currency's zone (USD/EUR; gold-backed
+                # currencies are zone-neutral) vs. the buyer's own
+                # currency_zone (None for legacy count-based agents, which
+                # never pay this tax). Computed on the final accepted price,
+                # same as the deterministic path below.
+                tx.fx_tax_paid = compute_fx_tax(
+                    tx.paid_value, env.currencies[tx.currency_symbol], buyer.currency_zone, fx_params.fx_tax_rate
+                )
+
                 # Step 10: validate.
                 validation = validate_transaction(tx, buyer.wallet, env.currencies)
                 if not validation.is_valid:
@@ -542,6 +558,15 @@ def run_timestep(
                 if agreed_price is None:
                     continue
 
+                # Task 6: cross-border FX conversion tax (see the LLM-path
+                # comment above for the full rationale) -- computed here on
+                # the same env.currencies[chosen.currency_symbol]/
+                # buyer.currency_zone/fx_params.fx_tax_rate inputs so both
+                # paths apply identical FX-tax semantics before settlement.
+                fx_tax_paid = compute_fx_tax(
+                    agreed_price, env.currencies[chosen.currency_symbol], buyer.currency_zone, fx_params.fx_tax_rate
+                )
+
                 tx = Transaction(
                     buyer_id=buyer.agent_id,
                     seller_id=seller.agent_id,
@@ -552,6 +577,7 @@ def run_timestep(
                     expected_value=listing.true_price,
                     paid_value=agreed_price,
                     timestep=day,
+                    fx_tax_paid=fx_tax_paid,
                 )
 
                 # Step 10: validate.
