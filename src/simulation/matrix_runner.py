@@ -55,11 +55,21 @@ This module's `_seed_sandbox_wallets` fixes both: every agent (buyer,
 seller, and the non-participating bank/investor/institution classes alike
 -- all of them get logged by `persist_full_timestep`) has its wallet
 *replaced* (not merely topped up) with a balance in both of the sandbox
-pair's symbols, sized to that agent's pre-existing total wallet value
-(summed raw balances -- no cross-currency conversion is attempted, since
-the agent's original symbols aren't even part of this sandbox's universe).
-Replacing rather than appending is deliberate: leaving old real-universe
-balances in place would keep triggering problem 2 above.
+pair's symbols, sized to that agent's pre-existing total wallet VALUE in
+USD (via `Wallet.total_value_usd` against the real 9-currency universe's
+`ExchangeRateTable`, not a raw sum of balances across different real
+currencies -- a unit of USDC and a unit of PAXG are not worth the same
+amount), split evenly by VALUE (not by unit count) across the sandbox's two
+symbols via that sandbox's own `ExchangeRateTable`. Splitting by raw unit
+count would badly skew the two asset-backing sandboxes: a gold-pegged
+sandbox symbol (`peg="XAU"`, ~2400 USD/unit) holding the same NUMBER of
+units as a stablecoin-pegged sandbox symbol (`peg="USD"`, 1 USD/unit) would
+hold ~2400x its counterpart's actual USD value, corrupting
+`real_purchasing_power`, `adapt_cara_coefficient`, and any shock's measured
+wealth impact for exactly the two sandboxes designed to isolate
+`asset_class` as a factor. Replacing rather than appending old balances is
+deliberate: leaving old real-universe balances in place would keep
+triggering problem 2 above.
 
 `dry_run` safety gate: `dry_run=False` requires the caller to supply BOTH a
 real `openrouter_client` and a real `polygon_client` explicitly (raises
@@ -118,7 +128,8 @@ from sqlalchemy.orm import Session
 from database.repository import SimulationRunLogEntry, SimulationRunRepository, persist_full_timestep
 from src.agents.base_agent import BaseAgent
 from src.agents.population import generate_agent_population
-from src.currencies.currency import CurrencyConfig
+from src.currencies.currency import CurrencyConfig, load_currency_universe
+from src.currencies.exchange_rates import ExchangeRateTable
 from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
 from src.llm.agent_reasoning import PROMPT_VERSIONS, hash_rendered_prompt
 from src.llm.llm_router import verify_model_candidates
@@ -127,6 +138,7 @@ from src.simulation.environment import Environment
 from src.simulation.provenance import compute_config_hash, compute_git_commit_hash, model_roster_summary_for
 from src.simulation.timestep import TimestepResult, run_timestep
 from src.utils.constants import CONFIG_ROOT
+from src.utils.helpers import generate_id
 
 MASTER_SCENARIO_NAME = "master_simulation"
 
@@ -240,23 +252,44 @@ def _resolve_available_models(model_candidates: list[str], openrouter_client: ht
     return available
 
 
-def _seed_sandbox_wallets(agents: dict[str, BaseAgent], currencies: dict[str, CurrencyConfig]) -> None:
+def _seed_sandbox_wallets(
+    agents: dict[str, BaseAgent],
+    sandbox_currencies: dict[str, CurrencyConfig],
+    real_currencies: dict[str, CurrencyConfig],
+    peg_reference_rates: dict[str, float],
+) -> None:
     """See this module's docstring ("Sandbox wallet-seeding gap"). REPLACES
     every agent's wallet (buyer, seller, and non-participating classes
     alike -- `persist_full_timestep` logs all of them) with a balance split
-    evenly across both of `currencies`' symbols, sized to that agent's
-    pre-existing total wallet value. Buyers need this to get any candidates
-    at all from `generate_candidates`; every agent needs their leftover
-    real-universe balances removed so `real_purchasing_power`'s
-    `ExchangeRateTable` lookup (built from only these 2 sandbox currencies)
-    never KeyErrors on a symbol it doesn't know."""
-    symbols = list(currencies.keys())
+    evenly BY USD VALUE (not raw unit count -- see the module docstring for
+    why unit-count splitting badly skews the asset-backing sandboxes) across
+    both of `sandbox_currencies`' symbols, sized to that agent's pre-existing
+    total wallet value. Buyers need this to get any candidates at all from
+    `generate_candidates`; every agent needs their leftover real-universe
+    balances removed so `real_purchasing_power`'s `ExchangeRateTable` lookup
+    (built from only these 2 sandbox currencies) never KeyErrors on a symbol
+    it doesn't know.
+
+    `real_currencies` and `peg_reference_rates` let this function build an
+    `ExchangeRateTable` for the agent's ORIGINAL (real-universe) balances --
+    by the time this is called, `env.currencies` has already been replaced
+    with `sandbox_currencies`, so the real universe must be supplied
+    separately. `peg_reference_rates` (e.g. `{"USD": 1.0, "EUR": 1.08, "XAU":
+    2400.0}`) is shared between both tables: every real and sandbox currency
+    alike pegs to one of USD/EUR/XAU, so the same reference dict prices both
+    sides consistently.
+    """
+    real_rates = ExchangeRateTable(real_currencies, peg_reference_rates)
+    sandbox_rates = ExchangeRateTable(sandbox_currencies, peg_reference_rates)
+    symbols = list(sandbox_currencies.keys())
     for agent in agents.values():
-        total_value = sum(agent.wallet.balances.values())
-        if total_value <= 0:
-            total_value = 1000.0  # safe floor, matching consumer.yaml's USDC scale
-        share = total_value / len(symbols)
-        agent.wallet.balances = {symbol: share for symbol in symbols}
+        total_usd_value = agent.wallet.total_value_usd(real_rates)
+        if total_usd_value <= 0:
+            total_usd_value = 1000.0  # safe floor, matching consumer.yaml's USDC scale
+        share_usd = total_usd_value / len(symbols)
+        agent.wallet.balances = {
+            symbol: sandbox_rates.convert(share_usd, "USD", symbol) for symbol in symbols
+        }
 
 
 def run_matrix(
@@ -267,6 +300,7 @@ def run_matrix(
     openrouter_client: httpx.Client | None = None,
     polygon_client: httpx.Client | None = None,
     session: Session | None = None,
+    matrix_run_id: str | None = None,
 ) -> list[MatrixCellResult]:
     """Run the 13-cell x `seeds` experiment matrix for `num_days` days each.
 
@@ -282,6 +316,22 @@ def run_matrix(
     `sqlite:///:memory:`-backed `Session` explicitly (matching every other
     `tests/test_*_persistence.py` file's convention) so a fast dry-run test
     suite never touches the real on-disk database.
+
+    `matrix_run_id`, if `None` (the default), is generated fresh
+    (`generate_id("matrix")`) once at the start of this call and prefixed
+    onto every cell/seed's `run_id`
+    (`f"{matrix_run_id}-{spec.key}-seed{seed}"`). `SimulationRunRecord.run_id`
+    is a primary key with no upsert, so two separate `run_matrix` calls
+    against the SAME database (a pilot run followed by the real run, or a
+    restart after a partial failure) would otherwise always collide on the
+    first invocation's deterministic `run_id`s and raise `IntegrityError`.
+    Auto-generating a fresh `matrix_run_id` per call makes that the default,
+    safe behavior. A caller may still pass an explicit `matrix_run_id` to
+    deliberately resume/retry under a stable, predictable prefix -- doing so
+    means a second call with the SAME `matrix_run_id` (and the same
+    cells/seeds) WILL collide again; that is intentional, not a bug, since
+    "resume under this exact id" implies the caller wants the collision (or
+    is retrying against an empty/rolled-back database).
     """
     if not dry_run and (openrouter_client is None or polygon_client is None):
         raise ValueError(
@@ -296,11 +346,15 @@ def run_matrix(
         create_all_tables()
         session = new_session()
 
+    if matrix_run_id is None:
+        matrix_run_id = generate_id("matrix")
+
     available_models = _resolve_available_models(model_candidates, None if dry_run else openrouter_client)
     use_llm = openrouter_client is not None
 
     git_commit_hash = compute_git_commit_hash()
     prompt_version_hash = _prompt_version_hash()
+    real_currency_universe = load_currency_universe()
 
     results: list[MatrixCellResult] = []
 
@@ -311,11 +365,13 @@ def run_matrix(
             population = generate_agent_population(seed, available_models)
             env = Environment.build_from_population(MASTER_SCENARIO_NAME, population, currencies=spec.currencies)
             if spec.currencies is not None:
-                _seed_sandbox_wallets(env.agents, spec.currencies)
+                _seed_sandbox_wallets(
+                    env.agents, spec.currencies, real_currency_universe, env.macro_state.peg_reference_rates
+                )
             if spec.cross_border:
                 env.marketplace = CrossZoneMarketplace(env.agents)
 
-            run_id = f"{spec.key}-seed{seed}"
+            run_id = f"{matrix_run_id}-{spec.key}-seed{seed}"
 
             SimulationRunRepository(session).record(
                 SimulationRunLogEntry(

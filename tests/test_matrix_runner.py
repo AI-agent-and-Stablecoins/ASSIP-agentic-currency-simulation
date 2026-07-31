@@ -18,11 +18,16 @@ so "fast" here means few days/cells, not few agents).
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database.models import AgentRecord, Base, SimulationRunRecord, TimestepLogRecord, TransactionRecord
 from src.agents.population import generate_agent_population
-from src.simulation.matrix_runner import MASTER_SCENARIO_NAME, run_matrix
+from src.currencies.currency import load_currency_universe
+from src.currencies.exchange_rates import ExchangeRateTable
+from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
+from src.economy.macro_state import MacroState
+from src.simulation.matrix_runner import MASTER_SCENARIO_NAME, _seed_sandbox_wallets, run_matrix
 from tests.llm_test_helpers import mock_openrouter_client
 
 MODEL_CANDIDATES = ["vendor/fake-model"]
@@ -215,3 +220,101 @@ def test_run_matrix_works_with_a_supplied_mock_openrouter_client_under_dry_run()
     assert len(results) == 13
     master = _by_cell_key(results, "master")
     assert master.daily_results[0].llm_decisions  # LLM path actually ran
+
+
+def test_seed_sandbox_wallets_splits_by_usd_value_not_raw_units():
+    """Regression test for the Task 13 review's Critical Fix 1:
+    `_seed_sandbox_wallets` must split an agent's wealth EVENLY BY USD VALUE
+    across the two sandbox symbols, not by raw unit count. The
+    `asset_backing_vs_liquidity` sandbox pairs a gold-pegged symbol
+    (peg="XAU", ~2400 USD/unit) against a stablecoin symbol (peg="USD", 1
+    USD/unit) -- assigning both the SAME NUMBER of units (the pre-fix
+    behavior) would leave the gold-pegged symbol holding ~2400x the actual
+    USD value of its stablecoin counterpart."""
+    seed = 0
+    population = generate_agent_population(seed, MODEL_CANDIDATES)
+    agents = {agent.agent_id: agent for agent in population}
+
+    real_currency_universe = load_currency_universe()
+    peg_reference_rates = MacroState().peg_reference_rates
+    real_rates = ExchangeRateTable(real_currency_universe, peg_reference_rates)
+
+    # Snapshot each agent's correctly-computed original USD value (summing
+    # DIFFERENT real currencies' raw units directly, as the pre-fix code
+    # did, is itself wrong -- Wallet.total_value_usd is the correct way to
+    # total a wallet holding several distinct real currencies).
+    original_usd_value = {
+        agent_id: agent.wallet.total_value_usd(real_rates) for agent_id, agent in agents.items()
+    }
+
+    option_a, option_b = SANDBOX_CURRENCY_PAIRS["asset_backing_vs_liquidity"]
+    sandbox_currencies = {option_a.symbol: option_a, option_b.symbol: option_b}
+    assert option_a.peg == "XAU"
+    assert option_b.peg == "USD"
+
+    _seed_sandbox_wallets(agents, sandbox_currencies, real_currency_universe, peg_reference_rates)
+
+    sandbox_rates = ExchangeRateTable(sandbox_currencies, peg_reference_rates)
+    for agent_id, agent in agents.items():
+        assert set(agent.wallet.balances.keys()) == {option_a.symbol, option_b.symbol}
+        value_a = sandbox_rates.convert(agent.wallet.balances[option_a.symbol], option_a.symbol, "USD")
+        value_b = sandbox_rates.convert(agent.wallet.balances[option_b.symbol], option_b.symbol, "USD")
+
+        # Both sandbox currencies hold approximately EQUAL USD value.
+        assert value_a == pytest.approx(value_b, rel=0.01)
+
+        # The total (sum of both currencies' USD value) approximately
+        # equals the agent's original pre-sandbox wallet USD value.
+        expected_total = original_usd_value[agent_id]
+        if expected_total <= 0:
+            expected_total = 1000.0  # matches _seed_sandbox_wallets' safe floor
+        assert (value_a + value_b) == pytest.approx(expected_total, rel=0.01)
+
+
+def test_run_matrix_can_be_called_twice_against_the_same_database_without_colliding():
+    """Regression test for the Task 13 review's Critical Fix 2: two separate
+    `run_matrix` calls (e.g. a pilot run followed by the real run, or a
+    restart after a partial failure) against the SAME database must not
+    collide on `run_id`, since `SimulationRunRecord.run_id` is a primary key
+    with no upsert. Without an explicit `matrix_run_id`, each call generates
+    its own fresh, unique prefix, so the second call must not raise
+    `IntegrityError`."""
+    session = _session()
+
+    first = run_matrix(model_candidates=MODEL_CANDIDATES, seeds=[0], num_days=1, dry_run=True, session=session)
+    second = run_matrix(model_candidates=MODEL_CANDIDATES, seeds=[0], num_days=1, dry_run=True, session=session)
+
+    assert len(first) == 13
+    assert len(second) == 13
+    first_run_ids = {r.run_id for r in first}
+    second_run_ids = {r.run_id for r in second}
+    assert first_run_ids.isdisjoint(second_run_ids)
+
+    assert session.query(SimulationRunRecord).count() == 26
+
+
+def test_run_matrix_with_the_same_explicit_matrix_run_id_twice_does_collide():
+    """Contrast case for the above: an explicitly-supplied `matrix_run_id`
+    is a deliberate "resume/retry under this exact id" request, so reusing
+    the SAME `matrix_run_id` against the SAME database must still collide
+    (documented as intentional behavior on the `matrix_run_id` parameter)."""
+    session = _session()
+
+    run_matrix(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[0],
+        num_days=1,
+        dry_run=True,
+        session=session,
+        matrix_run_id="fixed-run-id",
+    )
+
+    with pytest.raises(IntegrityError):
+        run_matrix(
+            model_candidates=MODEL_CANDIDATES,
+            seeds=[0],
+            num_days=1,
+            dry_run=True,
+            session=session,
+            matrix_run_id="fixed-run-id",
+        )
