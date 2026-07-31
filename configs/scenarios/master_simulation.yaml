@@ -1,0 +1,96 @@
+name: master_simulation
+initial_state:
+  inflation: 0.02
+  interest_rate: 0.05
+  gold_price: 2400.0
+  confidence_index: 1.0
+  peg_reference_rates:
+    USD: 1.0
+    EUR: 1.08
+    XAU: 2400.0
+shocks:
+  # --- Single-instance coverage of the other 10 shock types (Sec 9) ---
+  # Macro-level shocks (no target_currency required), spaced 20 days apart.
+  - day: 10
+    type: inflation
+    magnitude: 0.03
+  - day: 30
+    type: gold_rally
+    magnitude: 0.08
+  - day: 50
+    type: bank_failure
+    magnitude: 0.25
+    target_issuer: "Signature Bank"
+  - day: 70
+    type: fee_spike
+    magnitude: 5.0
+  - day: 90
+    type: fx_rate_shock
+    magnitude: 0.06
+  # Currency-specific shocks, one distinct currency each.
+  - day: 110
+    type: regulatory_enforcement
+    magnitude: 0.30
+    target_currency: USDT
+  - day: 130
+    type: liquidity_crunch
+    magnitude: 0.20
+    target_currency: FDUSD
+  - day: 150
+    type: governance_downgrade
+    magnitude: 0.15
+    target_currency: DAI
+  - day: 170
+    type: fx_volatility_shock
+    magnitude: 0.05
+    target_currency: XAUT
+  - day: 190
+    type: capital_controls
+    magnitude: 0.20
+    target_currency: EURC
+
+  # --- H4 crisis-proximity sweep: crisis_warning -> depeg_event pairs at
+  # 0/5/10/20-day gaps, each pair on a distinct currency, each cluster
+  # spaced >=15 days from every other shock's day. ---
+
+  # Gap = 0 days (warning and depeg on the same day)
+  - day: 210
+    type: crisis_warning
+    magnitude: 0.05
+    target_currency: TDUSD
+  - day: 210
+    type: depeg_event
+    magnitude: 0.15
+    target_currency: TDUSD
+
+  # Gap = 5 days
+  - day: 230
+    type: crisis_warning
+    magnitude: 0.05
+    target_currency: USDC
+  - day: 235
+    type: depeg_event
+    magnitude: 0.15
+    target_currency: USDC
+
+  # Gap = 10 days
+  - day: 260
+    type: crisis_warning
+    magnitude: 0.05
+    target_currency: EURT
+  - day: 270
+    type: depeg_event
+    magnitude: 0.15
+    target_currency: EURT
+
+  # Gap = 20 days
+  - day: 300
+    type: crisis_warning
+    magnitude: 0.05
+    target_currency: PAXG
+  - day: 320
+    type: depeg_event
+    magnitude: 0.15
+    target_currency: PAXG
+
+duration_days: 365
