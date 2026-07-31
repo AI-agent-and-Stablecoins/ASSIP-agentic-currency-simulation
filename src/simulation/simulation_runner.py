@@ -8,6 +8,7 @@ writes to the database, so this module has no dependency on database/.
 import random
 from typing import Callable, Optional
 
+import httpx
 from pydantic import BaseModel, Field
 
 from src.simulation.environment import Environment
@@ -23,6 +24,12 @@ class SimulationConfig(BaseModel):
     max_negotiation_rounds: int = 10
     agreement_tolerance: float = 0.01
     concession_rate: float = 0.3
+    # Opt-in LLM-driven decisions + full LLM-vs-LLM negotiation (see
+    # src.simulation.timestep.run_timestep). Only the boolean flag lives on
+    # this serializable config; the actual httpx.Client (not serializable,
+    # not part of run provenance) is supplied to SimulationRunner.run(...)
+    # directly, the same way on_timestep already is.
+    use_llm: bool = False
 
 
 class SimulationResult(BaseModel):
@@ -35,6 +42,7 @@ class SimulationRunner:
         self,
         config: SimulationConfig,
         on_timestep: Optional[Callable[[Environment, TimestepResult], None]] = None,
+        openrouter_client: httpx.Client | None = None,
     ) -> SimulationResult:
         env = Environment.build(config.scenario, config.agent_mix)
         rng = random.Random(config.random_seed)
@@ -48,6 +56,8 @@ class SimulationRunner:
                 max_negotiation_rounds=config.max_negotiation_rounds,
                 agreement_tolerance=config.agreement_tolerance,
                 concession_rate=config.concession_rate,
+                use_llm=config.use_llm,
+                openrouter_client=openrouter_client,
             )
             timesteps.append(result)
             if on_timestep is not None:
