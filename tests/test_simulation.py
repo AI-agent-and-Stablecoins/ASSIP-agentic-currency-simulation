@@ -898,3 +898,27 @@ def test_run_timestep_without_polygon_client_leaves_live_price_snapshots_empty()
 
     assert captured_prompts
     assert all("(no live price data available)" in prompt for prompt in captured_prompts)
+
+
+def test_build_from_population_uses_full_universe_when_currencies_is_none():
+    from src.agents.population import generate_agent_population
+
+    population = generate_agent_population(seed=0, model_candidates=["vendor/model"])
+
+    env = Environment.build_from_population("baseline", population)
+
+    assert len(env.currencies) == 9  # full real universe
+
+
+def test_build_from_population_uses_supplied_currencies_when_given():
+    from src.agents.population import generate_agent_population
+    from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
+
+    population = generate_agent_population(seed=0, model_candidates=["vendor/model"])
+    option_a, option_b = SANDBOX_CURRENCY_PAIRS["liquidity_vs_governance"]
+
+    env = Environment.build_from_population(
+        "baseline", population, currencies={option_a.symbol: option_a, option_b.symbol: option_b}
+    )
+
+    assert len(env.currencies) == 2

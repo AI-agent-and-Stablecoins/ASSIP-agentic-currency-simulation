@@ -67,3 +67,25 @@ class Environment:
             agents.extend(build_agent(profile) for _ in range(count))
 
         return cls(currencies=currencies, chains=chains, scenario=scenario, agents=agents)
+
+    @classmethod
+    def build_from_population(
+        cls,
+        scenario_name: str,
+        agents: list[BaseAgent],
+        currencies: dict[str, CurrencyConfig] | None = None,
+        goods: list[Good] | None = None,
+    ) -> "Environment":
+        """Build an Environment from an already-constructed agent population.
+
+        Alongside `Environment.build` (unchanged), for callers that build the
+        agent population themselves (e.g. `generate_agent_population`) instead
+        of an `agent_mix` count dict. `currencies=None` uses the full real
+        9-currency universe; a caller-supplied dict (e.g. one of
+        `SANDBOX_CURRENCY_PAIRS`) is used as-is -- the hook the 6
+        factor-isolation sandboxes use.
+        """
+        resolved_currencies = currencies if currencies is not None else load_currency_universe()
+        chains = load_chain_universe()
+        scenario = load_scenario(scenario_name)
+        return cls(currencies=resolved_currencies, chains=chains, scenario=scenario, agents=agents, goods=goods)
