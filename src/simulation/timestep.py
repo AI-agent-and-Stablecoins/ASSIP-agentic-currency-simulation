@@ -344,6 +344,7 @@ def run_timestep(
     # from any shocks due today.
     due_shocks = env.event_queue.pop_due(day)
     for shock in due_shocks:
+        env.event_log.record(shock)
         env.macro_state = apply_shock(env.macro_state, shock)
         env.currencies = apply_currency_shock(env.currencies, shock)
     env.refresh_exchange_rates()

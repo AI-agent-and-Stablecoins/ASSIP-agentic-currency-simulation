@@ -95,6 +95,28 @@ def test_run_timestep_reports_no_fired_shocks_on_a_quiet_day():
     assert result.fired_shocks == []
 
 
+def test_run_timestep_records_fired_shocks_into_the_event_log():
+    env = _build_env_with_shocks(
+        [ShockEvent(day=0, type=ShockType.INFLATION, magnitude=0.02)],
+        {"consumer": 2, "merchant": 2},
+    )
+    rng = random.Random(0)
+
+    run_timestep(env, day=0, rng=rng)
+
+    assert len(env.event_log.all_events()) == 1
+    assert env.event_log.all_events()[0].type == ShockType.INFLATION
+
+
+def test_run_timestep_does_not_record_anything_into_the_event_log_on_a_quiet_day():
+    env = Environment.build("baseline", {"consumer": 2, "merchant": 2})
+    rng = random.Random(0)
+
+    run_timestep(env, day=0, rng=rng)
+
+    assert env.event_log.all_events() == []
+
+
 def test_run_timestep_records_narrative_memory_for_agents_holding_a_shocked_currency():
     env = _build_env_with_shocks(
         [ShockEvent(day=0, type=ShockType.DEPEG_EVENT, magnitude=0.08, target_currency="USDT")],
