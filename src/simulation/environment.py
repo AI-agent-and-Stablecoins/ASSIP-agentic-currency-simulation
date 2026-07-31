@@ -49,6 +49,14 @@ class Environment:
         self.event_queue = EventQueue(scenario.shocks)
         self.exchange_rates = ExchangeRateTable(currencies, self.macro_state.peg_reference_rates)
         self.price_index: float = 1.0
+        # Task 11 (Phase 3 Plan 4): day-over-day real purchasing power per
+        # agent, keyed by agent_id -- the state persist_full_timestep needs
+        # to drive Task 7's adapt_cara_coefficient (which requires a
+        # w_real_before/w_real_after pair). Empty until an agent's first
+        # persist_full_timestep call, which seeds it without adapting
+        # (there is no genuine "before" to compare against on an agent's
+        # first day).
+        self.previous_real_purchasing_power: dict[str, float] = {}
 
     def refresh_exchange_rates(self) -> None:
         """Call after macro_state changes (e.g. a shock) to rebuild derived rate lookups."""

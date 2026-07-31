@@ -26,10 +26,23 @@ from database.models import (
     WalletRecord,
 )
 from src.agents.base_agent import BaseAgent
+from src.agents.wealth import real_purchasing_power
+from src.blockchain.routing_engine import CurrencyChainOption
+from src.economy.risk_adaptation import adapt_cara_coefficient, load_risk_adaptation_params
+from src.llm.hallucination_detector import HallucinationDirection
 from src.negotiation.conversation_history import ConversationLog
 from src.simulation.environment import Environment
+# Aliased to avoid colliding with database.models.LLMDecisionRecord (the
+# SQLAlchemy table) above -- this is Task 5's thin per-decision outcome
+# shape from TimestepResult.llm_decisions, a different class with the same
+# name. Safe to import at module level: timestep.py itself never imports
+# httpx/src.llm.* at module level (see its own docstring and
+# tests/test_simulation.py's AST check), so this doesn't reintroduce the
+# sandbox-breaking hard dependency database/repository.py otherwise avoids.
+from src.simulation.timestep import LLMDecisionRecord as TimestepLLMDecisionRecord
 from src.simulation.timestep import TimestepResult
 from src.transactions.transaction import Transaction
+from src.utils.helpers import generate_id
 
 
 class LLMDecisionLogEntry(BaseModel):
@@ -291,4 +304,223 @@ def persist_timestep(session: Session, env: Environment, result: TimestepResult)
         tx_repo.record(tx)
     for log in result.negotiations:
         negotiation_repo.record(log)
+    session.commit()
+
+
+# A "no-op" CurrencyChainOption -- safety_multiplier=1.0 (governance_score=1,
+# liquidity_score=1, peg_error=0), gas_fee=0.0 -- used only to resolve
+# agent.utility_fn.evaluate() against the agent's own realized wealth,
+# per the design spec Sec 7's utility_score resolution ("not a stakes
+# decision, flagged for review"). currency_symbol/chain_name are unused
+# labels; genius_compliant=True is the neutral/no-penalty choice for
+# MultiAttributeUtility's compliance term (the only utility type that reads
+# it) -- every UtilityFunction.evaluate() implementation accepts a `wealth`
+# kwarg (or ignores it, for MultiAttributeUtility), so one call here works
+# polymorphically across cara/risk_neutral/crra/multi_attribute/
+# epstein_zin_proxy without per-type branching.
+_NEUTRAL_UTILITY_CANDIDATE = CurrencyChainOption(
+    currency_symbol="NEUTRAL",
+    chain_name="NEUTRAL",
+    governance_score=1.0,
+    liquidity_score=1.0,
+    peg_error=0.0,
+    gas_fee=0.0,
+    finality_seconds=0.0,
+    genius_compliant=True,
+)
+
+
+def _agent_utility_score(agent: BaseAgent, w_real_after: float) -> float:
+    return agent.utility_fn.evaluate(_NEUTRAL_UTILITY_CANDIDATE, wealth=w_real_after)
+
+
+def _llm_decision_utility_parameters(agent: BaseAgent | None) -> dict:
+    if agent is None:
+        return {}
+    params: dict = {}
+    if agent.risk_aversion is not None:
+        params["risk_aversion"] = agent.risk_aversion
+    if agent.eis is not None:
+        params["eis"] = agent.eis
+    if agent.multi_attribute_weights is not None:
+        params.update(agent.multi_attribute_weights.model_dump())
+    return params
+
+
+def _llm_decision_log_entry(
+    decision: TimestepLLMDecisionRecord,
+    decision_id: str,
+    run_id: str,
+    timestep: int,
+    agent: BaseAgent | None,
+    scenario_name: str,
+) -> LLMDecisionLogEntry:
+    # Function-local: agent_reasoning.py imports httpx at module level, so
+    # this must not become a module-level import of database/repository.py
+    # (see this module's docstring on why persist_timestep/
+    # persist_full_timestep must stay importable without httpx installed).
+    from src.llm.agent_reasoning import PROMPT_VERSIONS, hash_rendered_prompt
+
+    # Known limitation (documented in task-11-report.md): Task 5's
+    # TimestepLLMDecisionRecord is deliberately a thin, additive shape (see
+    # its own docstring in src/simulation/timestep.py) that does not retain
+    # the actual rendered prompt text, nor the per-decision
+    # domestic_or_cross_border/governance_prompt_enabled context that only
+    # exists inside run_timestep's buyer/seller loop. Reconstructing those
+    # faithfully after the fact from result.llm_decisions alone is not
+    # possible without threading more state through Task 5's record (out of
+    # this task's scope) -- so prompt_version is the one field recoverable
+    # via agent_class, and rendered_prompt_hash/system_prompt/
+    # domestic_or_cross_border/governance_prompt_enabled use documented
+    # placeholders rather than fabricated-but-wrong values.
+    prompt_version = PROMPT_VERSIONS.get(decision.agent_type, "unknown")
+    # Phase 3 assigns exactly one fixed model per agent with no fallback
+    # chain (design spec Sec 1.2) -- fallback_used is always False here;
+    # failure_reason (a total-decision-failure diagnostic, not a
+    # model-substitution reason) is carried in fallback_reason since no
+    # dedicated column exists for it.
+    model_attempts = [decision.actual_model] * (decision.correction_attempts + 1)
+
+    return LLMDecisionLogEntry(
+        decision_id=decision_id,
+        simulation_id=run_id,
+        timestep=timestep,
+        agent_id=decision.agent_id,
+        agent_type=decision.agent_type,
+        requested_model=decision.requested_model,
+        actual_model=decision.actual_model,
+        fallback_used=False,
+        fallback_reason=decision.failure_reason,
+        model_attempts=model_attempts,
+        prompt_version=prompt_version,
+        rendered_prompt_hash=hash_rendered_prompt(decision.reasoning or ""),
+        system_prompt="",
+        action=decision.action or "NONE",
+        currency=decision.currency_symbol or "",
+        chain=decision.chain_name or "",
+        amount=decision.amount if decision.amount is not None else 0.0,
+        price=decision.price if decision.price is not None else 0.0,
+        reported_reasoning=decision.reasoning or (decision.failure_reason or ""),
+        negotiation_id=decision.negotiation_id,
+        round=decision.round if decision.round is not None else 0,
+        risk_profile=decision.risk_profile,
+        utility_type=decision.utility_type,
+        utility_parameters=_llm_decision_utility_parameters(agent),
+        scenario=scenario_name,
+        domestic_or_cross_border="unknown",
+        governance_prompt_enabled=False,
+    )
+
+
+def persist_full_timestep(session: Session, env: Environment, result: TimestepResult, run_id: str) -> None:
+    """Ties together every per-day/per-agent/per-decision persistence table
+    (Tasks 2, 3, 5, 7, 8) into one call per simulated day. Extends
+    `persist_timestep` (calls it for its existing agent/transaction/
+    negotiation behavior) rather than duplicating it.
+
+    CARA-adaptation wiring (the integration gap this task closes): Task 7's
+    `adapt_cara_coefficient` was built as a standalone function, never
+    called from `run_timestep` or any day-loop driver -- nothing in
+    production ever adapted an agent's cara_coefficient before this
+    function. This is the first place that has a natural reason to compare
+    an agent's real purchasing power day-over-day (it already needs
+    `real_purchasing_power` for `AgentStateLogEntry`), so it drives that
+    comparison itself: `env.previous_real_purchasing_power` (keyed by
+    agent_id) holds each agent's most recent real purchasing power. On an
+    agent's first-ever call, there is no genuine "before" to compare
+    against, so adaptation is skipped and the value is just seeded;
+    `adapt_cara_coefficient` is a no-op for non-CARA-eligible
+    (cara_coefficient is None) agents automatically.
+    """
+    persist_timestep(session, env, result)
+
+    risk_adaptation_params = load_risk_adaptation_params()
+
+    timestep_repo = TimestepLogRepository(session)
+    agent_state_repo = AgentStateRepository(session)
+    agent_memory_repo = AgentMemoryLogRepository(session)
+    intervention_repo = InterventionLogRepository(session)
+    llm_decision_repo = LLMDecisionRepository(session)
+    hallucination_repo = HallucinationRepository(session)
+
+    timestep_repo.record(
+        TimestepLogEntry(
+            run_id=run_id,
+            timestep=result.day,
+            inflation_rate=env.macro_state.inflation,
+            confidence_index=env.macro_state.confidence_index,
+            eth_gas_fee_gwei=env.chains["ethereum"].gas_fee if "ethereum" in env.chains else 0.0,
+            solana_gas_fee_usd=env.chains["solana"].gas_fee if "solana" in env.chains else 0.0,
+            eur_usd_exchange_rate=env.macro_state.peg_reference_rates.get("EUR", 1.0),
+        )
+    )
+
+    for agent in env.agents.values():
+        w_real_after = real_purchasing_power(agent.wallet, env.exchange_rates, env.price_index)
+
+        w_real_before = env.previous_real_purchasing_power.get(agent.agent_id)
+        if w_real_before is not None:
+            adapt_cara_coefficient(
+                agent, w_real_before=w_real_before, w_real_after=w_real_after, params=risk_adaptation_params
+            )
+        env.previous_real_purchasing_power[agent.agent_id] = w_real_after
+
+        agent_state_repo.record(
+            AgentStateLogEntry(
+                run_id=run_id,
+                timestep=result.day,
+                agent_id=agent.agent_id,
+                risk_profile=agent.risk_profile,
+                cara_coefficient=agent.cara_coefficient,
+                real_purchasing_power=w_real_after,
+                wallet_balances=dict(agent.wallet.balances),
+                utility_score=_agent_utility_score(agent, w_real_after),
+            )
+        )
+
+    for shock in result.fired_shocks:
+        intervention_repo.record(
+            InterventionLogEntry(
+                run_id=run_id,
+                timestep=result.day,
+                shock_type=shock.type.value,
+                target_currency=shock.target_currency,
+                target_issuer=shock.target_issuer,
+                magnitude=shock.magnitude,
+            )
+        )
+
+    for agent_id, memory_type, memory_text in result.memory_events:
+        agent_memory_repo.record(
+            AgentMemoryLogEntry(
+                run_id=run_id,
+                timestep=result.day,
+                agent_id=agent_id,
+                memory_type=memory_type,
+                memory_text=memory_text,
+            )
+        )
+
+    for decision in result.llm_decisions:
+        decision_id = generate_id("dec")
+        agent = env.agents.get(decision.agent_id)
+        llm_decision_repo.record(
+            _llm_decision_log_entry(decision, decision_id, run_id, result.day, agent, env.scenario.name)
+        )
+
+        if decision.hallucination is not None:
+            hallucination_repo.record(
+                HallucinationLogEntry(
+                    decision_id=decision_id,
+                    transaction_id=None,
+                    expected_price=decision.hallucination.expected_value,
+                    paid_price=decision.hallucination.paid_value,
+                    overpayment_pct=decision.hallucination.percentage_error,
+                    direction=decision.hallucination.direction.value,
+                    is_hallucination=decision.hallucination.direction != HallucinationDirection.ACCURATE,
+                    currency_symbol=decision.hallucination.currency_symbol or "",
+                    model_name=decision.hallucination.actual_model,
+                )
+            )
+
     session.commit()
