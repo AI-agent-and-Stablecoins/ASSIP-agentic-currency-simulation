@@ -6,12 +6,25 @@ this stays testable without a database).
 Phase 3 adds an opt-in `use_llm=True` path (see `run_timestep`'s docstring)
 that replaces the deterministic `choose_currency_and_chain` + `negotiate()`
 call with a real per-agent LLM decision and full LLM-vs-LLM negotiation.
-This makes `httpx` and the `src.llm`/`src.negotiation.llm_negotiation_engine`
-modules a hard import for this file -- previously core/dependency-free --
-which is an accepted, intentional consequence of this plan's tech stack
-(the `llm` extra is already required; see task-5-report.md for the note on
-why this was judged safe).
+
+`httpx` and the `httpx`-dependent slices of `src.llm` (agent_reasoning,
+llm_router, market_intelligence) are deliberately NOT imported at module
+level: `sandbox/sandbox_launcher.py` provisions its E2B sandbox with only
+`pydantic sqlalchemy pyyaml python-dotenv pandas` (no `httpx`) and then
+imports `simulation_runner` -> this module for a purely deterministic
+(use_llm=False) run. A module-level `import httpx` here would break that
+path even though it never touches the LLM code. Instead, those imports are
+function-local, executed only inside the functions/branches that actually
+need them (`decide_single_model`, and `run_timestep`'s `use_llm=True`
+branch) -- the same convention `src.agents.base_agent.BaseAgent
+.build_llm_context()` already uses for exactly this reason. `from __future__
+import annotations` keeps the `httpx.Client`/`AgentDecisionContext` type
+hints working without a module-level import (annotations are never
+evaluated at runtime unless something calls `typing.get_type_hints` on
+these functions, which nothing here does).
 """
+
+from __future__ import annotations
 
 import json
 import random
@@ -19,25 +32,15 @@ from typing import Callable
 
 from pydantic import BaseModel, Field
 
-import httpx
-
 from src.agents.base_agent import BaseAgent
 from src.agents.buyer_agent import BuyerAgent
 from src.agents.seller_agent import SellerAgent
 from src.blockchain.routing_engine import generate_candidates
 from src.economy.shocks import ShockEvent, ShockType, apply_currency_shock, apply_shock
-from src.llm.agent_reasoning import (
-    AgentDecisionContext,
-    TransactionContext,
-    build_decision_context,
-    render_prompt,
-)
 from src.llm.decision_adapter import DecisionValidationError, NegotiationAction, adapt_decision
 from src.llm.decision_schema import Decision, DecisionAction
 from src.llm.decision_to_transaction import build_transaction_from_negotiation
 from src.llm.hallucination_detector import HallucinationResult, detect_hallucination
-from src.llm.llm_router import AuthenticationError, ModelCallFailedError, call_model
-from src.llm.market_intelligence import load_currency_profile
 from src.market.pricing_engine import true_price
 from src.negotiation.conversation_history import ConversationLog
 from src.negotiation.llm_negotiation_engine import NegotiationSession, run_llm_negotiation
@@ -111,6 +114,7 @@ def decide_single_model(
     client: httpx.Client,
     supported_currencies: set[str],
     supported_chains: set[str],
+    payer_wallet_balances: dict[str, float] | None = None,
     telemetry: dict | None = None,
 ) -> NegotiationAction | None:
     """Single-model decision helper for Phase 3's fixed per-agent model
@@ -133,15 +137,30 @@ def decide_single_model(
     "no decision" so the caller can skip the transaction, not silently
     substitute rule-based behavior.
 
+    `payer_wallet_balances`, if given, is the balance dict `adapt_decision`
+    checks an ACCEPT against for funds-sufficiency. Defaults to `context
+    .agent.wallet_balances` (this side's own wallet) when omitted, which is
+    only correct when `context` belongs to the buyer -- the buyer is always
+    the one paying, so a seller-side call MUST pass the buyer's balances
+    explicitly (see `_make_llm_decide_closure`, which always threads the
+    buyer's wallet through for both sides); otherwise a seller ACCEPTing a
+    currency it happens not to hold itself -- irrelevant, since it isn't the
+    payer -- would be spuriously rejected as "insufficient funds".
+
     `telemetry`, if given a dict, is populated in place with
     `correction_attempts` (0 or 1) and `failure_reason` (None on success) so
     callers that need that detail for logging (see run_timestep's
     `LLMDecisionRecord`) don't have to change this function's primary
     `NegotiationAction | None` return contract.
     """
+    from src.llm.agent_reasoning import render_prompt
+    from src.llm.llm_router import AuthenticationError, ModelCallFailedError, call_model
+
     if telemetry is not None:
         telemetry.setdefault("correction_attempts", 0)
         telemetry.setdefault("failure_reason", None)
+
+    funds_check_balances = payer_wallet_balances if payer_wallet_balances is not None else context.agent.wallet_balances
 
     schema_json = json.dumps(Decision.model_json_schema())
     prompt = render_prompt(agent_class, context, schema_json)
@@ -154,7 +173,7 @@ def decide_single_model(
         return None
 
     try:
-        return adapt_decision(decision, supported_currencies, supported_chains, context.agent.wallet_balances)
+        return adapt_decision(decision, supported_currencies, supported_chains, funds_check_balances)
     except DecisionValidationError as exc:
         if telemetry is not None:
             telemetry["correction_attempts"] = 1
@@ -170,9 +189,7 @@ def decide_single_model(
             return None
 
         try:
-            return adapt_decision(
-                corrected_decision, supported_currencies, supported_chains, context.agent.wallet_balances
-            )
+            return adapt_decision(corrected_decision, supported_currencies, supported_chains, funds_check_balances)
         except DecisionValidationError as final_exc:
             if telemetry is not None:
                 telemetry["failure_reason"] = f"still invalid after one correction: {final_exc.reason}"
@@ -189,13 +206,18 @@ def _make_llm_decide_closure(
     supported_chains: set[str],
     listing_true_price: float,
     decision_log: list[LLMDecisionRecord],
+    buyer_wallet_balances: dict[str, float],
 ) -> Callable[[NegotiationSession], NegotiationAction]:
     """Builds one side's `buyer_decide`/`seller_decide` closure for
-    `run_llm_negotiation`. Each call: (1) appends a one-line summary of the
-    session's last offer into `context.conversation_history` so this agent
-    sees the other side's last move (the design spec's chosen mechanism --
-    not the dead `opponent_offer` field), (2) calls `decide_single_model`,
-    (3) records one `LLMDecisionRecord` (success or failure, with a
+    `run_llm_negotiation`. Each call: (1) rebuilds `context.conversation_history`
+    from scratch out of `session.conversation_history` (the full,
+    both-sides-in-order offer log `NegotiationSession` already keeps) so this
+    agent sees every prior offer -- its own as well as the opponent's, not
+    just the opponent's last move -- (2) calls `decide_single_model` passing
+    `buyer_wallet_balances` as the funds-check balances regardless of which
+    side this closure is for (the buyer is always the payer, so an ACCEPT's
+    funds check must never be run against the seller's own wallet), (3)
+    records one `LLMDecisionRecord` (success or failure, with a
     `detect_hallucination` call whenever a price was actually produced), and
     (4) on total failure, returns a synthetic WALK_AWAY action so
     `run_llm_negotiation`'s `Callable[..., NegotiationAction]` contract stays
@@ -205,12 +227,11 @@ def _make_llm_decide_closure(
     """
 
     def _decide(session: NegotiationSession) -> NegotiationAction:
-        if session.current_offer is not None:
-            offer = session.current_offer
-            context.conversation_history.append(
-                f"Round {offer.round}: {offer.agent_id} {offer.action.value} at price {offer.price} "
-                f"{offer.currency_symbol} on {offer.chain_name}. Reasoning: {offer.reasoning}"
-            )
+        context.conversation_history = [
+            f"Round {offer.round}: {offer.agent_id} {offer.action.value} at price {offer.price} "
+            f"{offer.currency_symbol} on {offer.chain_name}. Reasoning: {offer.reasoning}"
+            for offer in session.conversation_history
+        ]
 
         telemetry: dict = {}
         action = decide_single_model(
@@ -220,6 +241,7 @@ def _make_llm_decide_closure(
             client,
             supported_currencies,
             supported_chains,
+            payer_wallet_balances=buyer_wallet_balances,
             telemetry=telemetry,
         )
 
@@ -293,11 +315,24 @@ def run_timestep(
     per-agent LLM decision (`decide_single_model`) and a full LLM-vs-LLM
     negotiation (`run_llm_negotiation`) in place of that deterministic
     step -- `openrouter_client` is required in that case (raises ValueError
-    if None). Every other lifecycle step (shock application, marketplace
-    listing, memory recording) is shared and unconditional.
+    if None), as is every active agent having a non-None `assigned_model`
+    (raises ValueError naming the offending agent(s) otherwise -- silently
+    calling `decide_single_model(model_id=None, ...)` would just produce a
+    quiet zero-transaction run via synthetic WALK_AWAYs, which is a much
+    worse failure mode than an immediate loud error). Every other lifecycle
+    step (shock application, marketplace listing, memory recording) is
+    shared and unconditional.
     """
     if use_llm and openrouter_client is None:
         raise ValueError("openrouter_client is required when use_llm=True")
+
+    if use_llm:
+        unassigned = [agent_id for agent_id, agent in env.agents.items() if agent.assigned_model is None]
+        if unassigned:
+            raise ValueError(
+                "use_llm=True requires every agent to have an assigned_model, but the following "
+                f"agent(s) have assigned_model=None: {unassigned}"
+            )
 
     # Steps 1-2: update macroeconomic state, currency attributes, and prices
     # from any shocks due today.
@@ -369,6 +404,13 @@ def run_timestep(
                 # currencies/chains are narrowed to exactly what was offered
                 # this round -- not the full universe -- per the plan's
                 # anti-hallucination tightening.
+                #
+                # Local imports: these pull in httpx (via src.llm.agent_reasoning /
+                # src.llm.market_intelligence), so they must not be module-level --
+                # see this file's module docstring for why.
+                from src.llm.agent_reasoning import TransactionContext, build_decision_context
+                from src.llm.market_intelligence import load_currency_profile
+
                 supported_currencies = {c.currency_symbol for c in candidates}
                 supported_chains = {c.chain_name for c in candidates}
                 currency_profiles = {
@@ -376,15 +418,21 @@ def run_timestep(
                     for symbol in supported_currencies
                     if (profile := load_currency_profile(symbol)) is not None
                 }
-                cross_border = (
+                # NOTE: this is buyer-vs-seller currency-zone mismatch, known
+                # before any settlement currency is chosen -- a related but
+                # distinct concept from Task 9's upcoming FX-tax "cross-border"
+                # check, which will compare the settlement currency's zone
+                # against the buyer's currency_zone (computed later, once a
+                # currency is actually agreed). Do not conflate the two names.
+                counterparty_cross_zone = (
                     buyer.currency_zone is not None
                     and seller.currency_zone is not None
                     and buyer.currency_zone != seller.currency_zone
                 )
                 transaction_context = TransactionContext(
-                    is_cross_border=cross_border,
-                    origin_currency=buyer.currency_zone if cross_border else None,
-                    destination_currency=seller.currency_zone if cross_border else None,
+                    is_cross_border=counterparty_cross_zone,
+                    origin_currency=buyer.currency_zone if counterparty_cross_zone else None,
+                    destination_currency=seller.currency_zone if counterparty_cross_zone else None,
                 )
 
                 buyer_context = build_decision_context(
@@ -404,6 +452,10 @@ def run_timestep(
                     transaction_context,
                 )
 
+                # Both closures check ACCEPT's funds validity against the buyer's
+                # wallet, never the seller's -- the buyer is always the payer, so
+                # a seller ACCEPTing a currency it doesn't itself hold is
+                # irrelevant to whether the trade is affordable.
                 buyer_decide = _make_llm_decide_closure(
                     buyer,
                     "buyer",
@@ -414,6 +466,7 @@ def run_timestep(
                     supported_chains,
                     listing.true_price,
                     result.llm_decisions,
+                    buyer_wallet_balances=buyer_context.agent.wallet_balances,
                 )
                 seller_decide = _make_llm_decide_closure(
                     seller,
@@ -425,6 +478,7 @@ def run_timestep(
                     supported_chains,
                     listing.true_price,
                     result.llm_decisions,
+                    buyer_wallet_balances=buyer_context.agent.wallet_balances,
                 )
 
                 session = run_llm_negotiation(

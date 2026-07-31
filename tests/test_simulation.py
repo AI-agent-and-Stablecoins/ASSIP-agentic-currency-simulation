@@ -1,4 +1,7 @@
+import ast
+import importlib
 import random
+import sys
 
 import httpx
 import pytest
@@ -12,12 +15,13 @@ from src.llm.decision_adapter import NegotiationAction
 from src.llm.decision_schema import DecisionAction
 from src.llm.llm_router import OPENROUTER_BASE_URL
 from src.market.pricing_engine import true_price
-from src.negotiation.llm_negotiation_engine import NegotiationSession, NegotiationStatus
+from src.negotiation.llm_negotiation_engine import NegotiationSession, NegotiationStatus, run_llm_negotiation
 from src.simulation.environment import Environment
 from src.simulation.event_queue import EventQueue
 from src.simulation.simulation_runner import SimulationConfig, SimulationRunner
-from src.simulation.timestep import LLMDecisionRecord, decide_single_model, run_timestep
+from src.simulation.timestep import LLMDecisionRecord, _make_llm_decide_closure, decide_single_model, run_timestep
 from src.transactions.transaction import TransactionStatus
+from src.utils.constants import REPO_ROOT
 from tests.llm_test_helpers import mock_openrouter_client
 
 
@@ -377,3 +381,230 @@ def test_run_timestep_with_use_llm_false_is_unchanged_from_before():
     assert isinstance(result.transactions, list)
     assert result.llm_decisions == []
     assert result.llm_negotiations == []
+
+
+# ---------------------------------------------------------------------------
+# Task 5 review fixes
+# ---------------------------------------------------------------------------
+
+
+def test_timestep_module_has_no_top_level_httpx_or_llm_imports():
+    """Fix 1 (Critical), static check: sandbox/sandbox_launcher.py's E2B
+    provisioning installs only `pydantic sqlalchemy pyyaml python-dotenv
+    pandas` (no httpx) and then imports simulation_runner -> timestep for a
+    purely deterministic (use_llm=False) run. Any module-level `import
+    httpx` / `from src.llm.agent_reasoning import ...` / `from
+    src.llm.llm_router import ...` / `from src.llm.market_intelligence
+    import ...` line in timestep.py would break that path even though it
+    never touches the LLM code. This inspects the file's own module-level
+    AST (not the live, possibly-already-cached sys.modules) so it can't be
+    fooled by other test files having already imported httpx first.
+    """
+    source = (REPO_ROOT / "src" / "simulation" / "timestep.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    forbidden_modules = {
+        "httpx",
+        "src.llm.agent_reasoning",
+        "src.llm.llm_router",
+        "src.llm.market_intelligence",
+    }
+
+    for node in tree.body:  # module level only -- deliberately not ast.walk
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert alias.name not in forbidden_modules, (
+                    f"module-level `import {alias.name}` reintroduces the sandbox-breaking hard import"
+                )
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            assert node.module not in forbidden_modules, (
+                f"module-level `from {node.module} import ...` reintroduces the sandbox-breaking hard import"
+            )
+
+
+def test_run_timestep_use_llm_false_works_even_if_httpx_cannot_be_imported(monkeypatch):
+    """Fix 1 (Critical), behavioral check: reproduce the actual sandbox
+    failure mode by making a fresh `import httpx` raise, then confirming a
+    freshly (re-)imported timestep module still works end-to-end for a
+    deterministic run. `sys.modules["httpx"] = None` is the standard trick
+    for forcing ImportError on `import httpx` (see Python docs on
+    sys.modules); monkeypatch restores the original entries automatically.
+    """
+    monkeypatch.setitem(sys.modules, "httpx", None)
+    monkeypatch.delitem(sys.modules, "src.simulation.timestep", raising=False)
+
+    module = importlib.import_module("src.simulation.timestep")
+
+    env = Environment.build("baseline", {"consumer": 2, "merchant": 2})
+    rng = random.Random(0)
+    result = module.run_timestep(env, day=0, rng=rng)  # use_llm=False (default)
+
+    assert isinstance(result.transactions, list)
+    settled = [tx for tx in result.transactions if tx.status == TransactionStatus.SETTLED]
+    assert len(settled) > 0
+
+
+def test_decide_single_model_accept_checks_payer_wallet_not_context_agents_own():
+    """Fix 2 (Important): the funds check on ACCEPT must use the buyer's
+    (payer's) wallet balances, never the wallet of whichever side happens to
+    be making the decision. Here `context` belongs to a seller-like agent
+    whose own wallet_balances hold none of the settlement currency (which is
+    irrelevant -- the seller never pays); `payer_wallet_balances` is the
+    buyer's, which does. The ACCEPT must succeed.
+    """
+    context = _base_decision_context(wallet_balances={"USDC": 0.0})
+    client = mock_openrouter_client({"test-vendor/model": _decision_json(action="ACCEPT", price=90.0)})
+
+    action = decide_single_model(
+        "seller",
+        context,
+        "test-vendor/model",
+        client,
+        {"USDC"},
+        {"ethereum"},
+        payer_wallet_balances={"USDC": 1000.0},
+    )
+
+    assert action is not None
+    assert action.action == DecisionAction.ACCEPT
+
+
+def test_decide_single_model_accept_without_payer_override_falls_back_to_context_agent_wallet():
+    """Companion to the above: confirm the default (no payer_wallet_balances
+    given) still checks the context agent's own wallet -- i.e. the buyer-side
+    call sites, which never pass an override other than their own balances,
+    keep working exactly as before.
+    """
+    context = _base_decision_context(wallet_balances={"USDC": 0.0})
+    client = mock_openrouter_client({"test-vendor/model": _decision_json(action="ACCEPT", price=90.0)})
+
+    action = decide_single_model(
+        "buyer",
+        context,
+        "test-vendor/model",
+        client,
+        {"USDC"},
+        {"ethereum"},
+    )
+
+    assert action is None  # insufficient funds against context.agent.wallet_balances, no override given
+
+
+def test_run_timestep_sellers_accept_is_not_rejected_for_lacking_the_settlement_currency():
+    """Fix 2 (Important), end-to-end: give every seller a zero balance of the
+    settlement currency the negotiation actually lands on, while the buyer
+    holds plenty. Before the fix, the seller-side closure passed the
+    seller's own (empty) wallet into adapt_decision's funds check, so the
+    seller's ACCEPT would be spuriously invalidated and the negotiation
+    would end in a synthetic WALK_AWAY instead of a settled transaction.
+    """
+    env = Environment.build("baseline", {"consumer": 2, "merchant": 2})
+    _assign_models(env, "test-vendor/buyer-model", "test-vendor/seller-model")
+    for agent in env.agents.values():
+        if agent.agent_class == "seller":
+            agent.wallet.balances["USDC"] = 0.0
+
+    client = mock_openrouter_client(
+        {
+            "test-vendor/buyer-model": _decision_json(action="OFFER", price=90.0),
+            "test-vendor/seller-model": _decision_json(action="ACCEPT", price=90.0),
+        }
+    )
+    rng = random.Random(0)
+
+    result = run_timestep(env, day=0, rng=rng, use_llm=True, openrouter_client=client)
+
+    settled = [tx for tx in result.transactions if tx.status == TransactionStatus.SETTLED]
+    assert len(settled) > 0
+    assert all(record.success for record in result.llm_decisions)
+    accepted_sessions = [s for s in result.llm_negotiations if s.status == NegotiationStatus.ACCEPTED]
+    assert len(accepted_sessions) > 0
+
+
+def test_run_timestep_use_llm_true_raises_for_agent_missing_assigned_model():
+    """Fix 3 (Important): Environment.build's count-based path never sets
+    assigned_model, so with use_llm=True this must fail loudly and name the
+    affected agent(s), rather than silently calling decide_single_model with
+    model_id=None and producing a quiet zero-transaction run.
+    """
+    env = Environment.build("baseline", {"consumer": 2, "merchant": 2})
+    client = mock_openrouter_client({})
+    rng = random.Random(0)
+
+    with pytest.raises(ValueError) as exc_info:
+        run_timestep(env, day=0, rng=rng, use_llm=True, openrouter_client=client)
+
+    message = str(exc_info.value)
+    assert "assigned_model" in message
+    assert any(agent_id in message for agent_id in env.agents)
+
+
+def test_run_timestep_use_llm_true_succeeds_once_every_agent_has_an_assigned_model():
+    """Sanity companion: the same environment, once every agent is given an
+    assigned_model, must not raise the Fix 3 guard.
+    """
+    env = Environment.build("baseline", {"consumer": 2, "merchant": 2})
+    _assign_models(env, "test-vendor/buyer-model", "test-vendor/seller-model")
+    client = mock_openrouter_client({})
+    rng = random.Random(0)
+
+    result = run_timestep(env, day=0, rng=rng, use_llm=True, openrouter_client=client)
+
+    assert isinstance(result.transactions, list)
+
+
+def test_negotiation_conversation_history_includes_both_sides_offers_by_round_three():
+    """Fix 4 (Important): each side's conversation_history must be rebuilt
+    from the full, both-sides NegotiationSession.conversation_history, not
+    incrementally appended from only the opponent's last offer. With
+    COUNTER_OFFER on both sides (never terminating early), by the seller's
+    second turn (round 3 -- buyer:0, seller:1, buyer:2, seller:3) its
+    rebuilt conversation_history must mention BOTH agent_ids, not just the
+    buyer's (the old bug: a side's history only ever held the opponent's
+    offers, never its own).
+    """
+    env = Environment.build("baseline", {"consumer": 1, "merchant": 1})
+    buyer = next(a for a in env.agents.values() if a.agent_class == "buyer")
+    seller = next(a for a in env.agents.values() if a.agent_class == "seller")
+
+    buyer_context = _base_decision_context(wallet_balances=dict(buyer.wallet.balances))
+    seller_context = _base_decision_context(wallet_balances=dict(seller.wallet.balances))
+
+    client = mock_openrouter_client(
+        {
+            "buyer-model": _decision_json(action="COUNTER_OFFER", price=95.0),
+            "seller-model": _decision_json(action="COUNTER_OFFER", price=85.0),
+        }
+    )
+    decision_log: list = []
+
+    buyer_decide = _make_llm_decide_closure(
+        buyer,
+        "buyer",
+        buyer_context,
+        "buyer-model",
+        client,
+        {"USDC"},
+        {"ethereum"},
+        90.0,
+        decision_log,
+        buyer_wallet_balances=dict(buyer.wallet.balances),
+    )
+    seller_decide = _make_llm_decide_closure(
+        seller,
+        "seller",
+        seller_context,
+        "seller-model",
+        client,
+        {"USDC"},
+        {"ethereum"},
+        90.0,
+        decision_log,
+        buyer_wallet_balances=dict(buyer.wallet.balances),
+    )
+
+    session = run_llm_negotiation(buyer.agent_id, seller.agent_id, buyer_decide, seller_decide, max_rounds=4)
+
+    assert session.status == NegotiationStatus.MAX_ROUNDS_REACHED
+    assert any(buyer.agent_id in line for line in seller_context.conversation_history)
+    assert any(seller.agent_id in line for line in seller_context.conversation_history)
