@@ -141,6 +141,45 @@ def test_environment_starts_with_price_index_of_one():
     assert env.price_index == 1.0
 
 
+def test_run_timestep_advances_price_index_by_compounding_inflation():
+    """Fix 5 (Task 11 review): `advance_price_index`
+    (src/agents/wealth.py) had zero callers anywhere in the codebase, so
+    env.price_index stayed at its constructed 1.0 forever and
+    real_purchasing_power never actually reflected inflation -- only
+    nominal wallet changes. This fires an INFLATION shock on day 0 (which
+    permanently raises env.macro_state.inflation, per apply_shock) and runs
+    two days to confirm run_timestep now advances env.price_index by
+    compounding that inflation rate once per day, matching
+    advance_price_index's own compounding formula (already covered in
+    isolation by tests/test_wealth.py).
+    """
+    env = _build_env_with_shocks(
+        [ShockEvent(day=0, type=ShockType.INFLATION, magnitude=0.03)],
+        {"consumer": 2, "merchant": 2},
+    )
+    rng = random.Random(0)
+    assert env.price_index == pytest.approx(1.0)
+
+    run_timestep(env, day=0, rng=rng)
+    # baseline.yaml's own initial_state.inflation is added to by the shock's
+    # magnitude (apply_shock: `updated.inflation += shock.magnitude`), so
+    # this doesn't assume a starting inflation of exactly 0.0 -- only that
+    # whatever env.macro_state.inflation ends up as on day 0 is the rate
+    # env.price_index gets compounded by, day over day.
+    inflation_rate = env.macro_state.inflation
+    price_index_day_1 = env.price_index
+    assert price_index_day_1 == pytest.approx(1.0 * (1 + inflation_rate))
+
+    run_timestep(env, day=1, rng=rng)
+    # No shock fires on day 1, so inflation is unchanged -- confirms the
+    # per-day compounding formula Task 3 already implemented and tested in
+    # isolation (tests/test_wealth.py's test_advance_price_index_compounds_
+    # daily_inflation).
+    assert env.macro_state.inflation == pytest.approx(inflation_rate)
+    price_index_day_2 = env.price_index
+    assert price_index_day_2 == pytest.approx(price_index_day_1 * (1 + inflation_rate))
+
+
 def test_environment_build_constructs_a_trust_ledger():
     env = Environment.build("baseline", {"consumer": 2, "merchant": 2})
 
@@ -376,6 +415,46 @@ def test_run_timestep_with_use_llm_true_produces_llm_driven_transactions_with_gr
     assert all(isinstance(record, LLMDecisionRecord) for record in result.llm_decisions)
     assert all(record.success for record in result.llm_decisions)
     assert any(record.hallucination is not None for record in result.llm_decisions)
+
+
+def test_run_timestep_llm_decision_record_carries_the_actual_rendered_prompt_not_the_reasoning():
+    """Fix 1 (Critical, Task 11 review): `database/repository.py`'s
+    `_llm_decision_log_entry` used to hash `decision.reasoning` (the
+    model's own OUTPUT text) into `rendered_prompt_hash`, a column whose
+    whole contract is "hash of what the model actually saw" -- silently
+    wrong, since `LLMDecisionRecord` never carried the rendered prompt text
+    at all. This confirms the fix at its source: `decide_single_model`
+    (via `_make_llm_decide_closure`) now populates
+    `LLMDecisionRecord.rendered_prompt` with the exact text
+    `render_prompt` produced (captured via `_capturing_openrouter_client`,
+    which echoes back the literal request body `call_model` sent) -- and
+    that text is NOT the model's `reasoning` string.
+    """
+    env = Environment.build("baseline", {"consumer": 1, "merchant": 1})
+    _assign_models(env, "test-vendor/buyer-model", "test-vendor/seller-model")
+
+    captured_prompts: list[str] = []
+    client = _capturing_openrouter_client(
+        {
+            "test-vendor/buyer-model": _decision_json(action="OFFER", price=90.0),
+            "test-vendor/seller-model": _decision_json(action="ACCEPT", price=90.0),
+        },
+        captured_prompts,
+    )
+    rng = random.Random(0)
+
+    result = run_timestep(env, day=0, rng=rng, use_llm=True, openrouter_client=client)
+
+    assert result.llm_decisions
+    for record in result.llm_decisions:
+        assert record.success
+        # _decision_json's fixed "reasoning" value (see this file's
+        # _decision_json helper) -- the model's OUTPUT, never the prompt.
+        assert record.reasoning == "test reasoning"
+        assert record.rendered_prompt is not None
+        assert record.rendered_prompt != record.reasoning
+        # The captured request body IS the literal text render_prompt built.
+        assert record.rendered_prompt in captured_prompts
 
 
 def test_run_timestep_with_use_llm_true_and_total_model_failure_skips_transactions_gracefully():

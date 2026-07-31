@@ -293,7 +293,16 @@ class InterventionLogRepository:
         self.session.add(InterventionLogRecord(**entry.model_dump()))
 
 
-def persist_timestep(session: Session, env: Environment, result: TimestepResult) -> None:
+def persist_timestep(session: Session, env: Environment, result: TimestepResult, commit: bool = True) -> None:
+    """Persist one day's agent/transaction/negotiation rows.
+
+    `commit` defaults to True (this function's original, standalone
+    behavior: one commit covering just these rows). `persist_full_timestep`
+    passes `commit=False` and does its own single commit at the very end,
+    covering this function's writes plus its own -- see that function's
+    docstring for why (Task 11 review Fix 2: the day must land in exactly
+    one transaction, not two).
+    """
     agent_repo = AgentRepository(session)
     tx_repo = TransactionRepository(session)
     negotiation_repo = NegotiationRepository(session)
@@ -304,7 +313,8 @@ def persist_timestep(session: Session, env: Environment, result: TimestepResult)
         tx_repo.record(tx)
     for log in result.negotiations:
         negotiation_repo.record(log)
-    session.commit()
+    if commit:
+        session.commit()
 
 
 # A "no-op" CurrencyChainOption -- safety_multiplier=1.0 (governance_score=1,
@@ -364,15 +374,18 @@ def _llm_decision_log_entry(
     # Known limitation (documented in task-11-report.md): Task 5's
     # TimestepLLMDecisionRecord is deliberately a thin, additive shape (see
     # its own docstring in src/simulation/timestep.py) that does not retain
-    # the actual rendered prompt text, nor the per-decision
-    # domestic_or_cross_border/governance_prompt_enabled context that only
-    # exists inside run_timestep's buyer/seller loop. Reconstructing those
-    # faithfully after the fact from result.llm_decisions alone is not
-    # possible without threading more state through Task 5's record (out of
-    # this task's scope) -- so prompt_version is the one field recoverable
-    # via agent_class, and rendered_prompt_hash/system_prompt/
-    # domestic_or_cross_border/governance_prompt_enabled use documented
-    # placeholders rather than fabricated-but-wrong values.
+    # the per-decision domestic_or_cross_border/governance_prompt_enabled
+    # context that only exists inside run_timestep's buyer/seller loop.
+    # Reconstructing those faithfully after the fact from result
+    # .llm_decisions alone is not possible without threading more state
+    # through Task 5's record (out of this task's scope) -- so those two
+    # fields use documented placeholders rather than fabricated-but-wrong
+    # values. `rendered_prompt` (and therefore `rendered_prompt_hash`/
+    # `system_prompt` below), however, IS carried through `decision
+    # .rendered_prompt` (a Task 11 review fix: this previously hashed
+    # `decision.reasoning` -- the model's own OUTPUT text -- which produced a
+    # real-looking, per-row-unique hash that was simply wrong, since the
+    # column's whole contract is "hash of what the model actually saw").
     prompt_version = PROMPT_VERSIONS.get(decision.agent_type, "unknown")
     # Phase 3 assigns exactly one fixed model per agent with no fallback
     # chain (design spec Sec 1.2) -- fallback_used is always False here;
@@ -393,8 +406,8 @@ def _llm_decision_log_entry(
         fallback_reason=decision.failure_reason,
         model_attempts=model_attempts,
         prompt_version=prompt_version,
-        rendered_prompt_hash=hash_rendered_prompt(decision.reasoning or ""),
-        system_prompt="",
+        rendered_prompt_hash=hash_rendered_prompt(decision.rendered_prompt or ""),
+        system_prompt=decision.rendered_prompt or "",
         action=decision.action or "NONE",
         currency=decision.currency_symbol or "",
         chain=decision.chain_name or "",
@@ -415,8 +428,21 @@ def _llm_decision_log_entry(
 def persist_full_timestep(session: Session, env: Environment, result: TimestepResult, run_id: str) -> None:
     """Ties together every per-day/per-agent/per-decision persistence table
     (Tasks 2, 3, 5, 7, 8) into one call per simulated day. Extends
-    `persist_timestep` (calls it for its existing agent/transaction/
-    negotiation behavior) rather than duplicating it.
+    `persist_timestep` (calls it, with `commit=False`, for its existing
+    agent/transaction/negotiation behavior) rather than duplicating it.
+
+    Atomicity (Task 11 review Fix 2): a whole simulated day must land in
+    exactly ONE transaction. `persist_timestep` used to end with its own
+    `session.commit()`, and this function committed again at the end -- so
+    agent/transaction/negotiation rows became durable before the rest of the
+    day's rows (timestep/agent-state/intervention/memory/LLM-decision) were
+    even flushed; a failure partway through this function's own work left a
+    silently half-persisted day. Fixed by threading `commit=False` through to
+    `persist_timestep` so it only adds rows to the session, and doing the one
+    real `session.commit()` at the very end of this function, after every
+    repository call below -- a raised exception anywhere before that point
+    now leaves the whole day uncommitted (a caller-triggered rollback drops
+    all of it, not just "everything after persist_timestep").
 
     CARA-adaptation wiring (the integration gap this task closes): Task 7's
     `adapt_cara_coefficient` was built as a standalone function, never
@@ -432,7 +458,7 @@ def persist_full_timestep(session: Session, env: Environment, result: TimestepRe
     `adapt_cara_coefficient` is a no-op for non-CARA-eligible
     (cara_coefficient is None) agents automatically.
     """
-    persist_timestep(session, env, result)
+    persist_timestep(session, env, result, commit=False)
 
     risk_adaptation_params = load_risk_adaptation_params()
 
@@ -443,14 +469,35 @@ def persist_full_timestep(session: Session, env: Environment, result: TimestepRe
     llm_decision_repo = LLMDecisionRepository(session)
     hallucination_repo = HallucinationRepository(session)
 
+    # `env.chains` is always the full chain universe: Environment.build and
+    # Environment.build_from_population both call load_chain_universe()
+    # unconditionally (currency restriction, e.g. the 6 factor-isolation
+    # sandboxes' SANDBOX_CURRENCY_PAIRS, only ever narrows env.currencies,
+    # never env.chains) -- so "ethereum"/"solana" are always present here.
+    # No `if ... in env.chains` guard is needed; one would protect against
+    # nothing real.
+    #
+    # Task 11 review Fix 3: ChainConfig.gas_fee (src/blockchain/chain.py) is
+    # USD-denominated everywhere else in this codebase (subtracted directly
+    # from wealth in src/utility/cara.py, risk_neutral.py, epstein_zin.py,
+    # and carried as Transaction.gas_fee) -- there is no gwei-conversion
+    # mechanism anywhere in the codebase (confirmed: no "gwei" constant or
+    # helper exists outside this table's own column name and its tests).
+    # `eth_gas_fee_gwei` below therefore currently holds a raw USD value
+    # despite its name implying gwei units -- a pre-existing schema/naming
+    # mismatch from an earlier plan. Inventing a fake USD->gwei conversion
+    # here would be exactly the kind of unrequested economic assumption this
+    # project's conventions avoid, so this fix leaves the value as-is and
+    # flags it here for a future plan to decide whether to rename the
+    # column; it is NOT fixed by this pass.
     timestep_repo.record(
         TimestepLogEntry(
             run_id=run_id,
             timestep=result.day,
             inflation_rate=env.macro_state.inflation,
             confidence_index=env.macro_state.confidence_index,
-            eth_gas_fee_gwei=env.chains["ethereum"].gas_fee if "ethereum" in env.chains else 0.0,
-            solana_gas_fee_usd=env.chains["solana"].gas_fee if "solana" in env.chains else 0.0,
+            eth_gas_fee_gwei=env.chains["ethereum"].gas_fee,
+            solana_gas_fee_usd=env.chains["solana"].gas_fee,
             eur_usd_exchange_rate=env.macro_state.peg_reference_rates.get("EUR", 1.0),
         )
     )

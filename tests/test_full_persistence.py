@@ -27,11 +27,13 @@ from database.models import (
     TimestepLogRecord,
     TransactionRecord,
 )
-from database.repository import persist_full_timestep
+from database.repository import _llm_decision_log_entry, persist_full_timestep
 from src.agents.agent_factory import build_agent, load_agent_profiles
 from src.economy.shocks import ShockEvent, ShockType
+from src.llm.agent_reasoning import hash_rendered_prompt
 from src.simulation.environment import Environment
 from src.simulation.event_queue import EventQueue
+from src.simulation.timestep import LLMDecisionRecord as TimestepLLMDecisionRecord
 from src.simulation.timestep import TimestepResult, run_timestep
 from tests.llm_test_helpers import mock_openrouter_client
 
@@ -189,3 +191,131 @@ def test_persist_full_timestep_records_llm_decisions_and_hallucinations():
     hallucination_rows = session.query(HallucinationRecord).all()
     assert len(hallucination_rows) == expected_hallucination_count
     assert expected_hallucination_count > 0
+
+
+def test_llm_decision_log_entry_hashes_rendered_prompt_not_reasoning():
+    """Fix 1 (Critical, Task 11 review), direct unit test of the buggy
+    function itself: `_llm_decision_log_entry` used to compute
+    `rendered_prompt_hash=hash_rendered_prompt(decision.reasoning or "")`
+    -- hashing the model's OUTPUT, not the rendered PROMPT it was given.
+    Constructs a decision whose `reasoning` and `rendered_prompt` are
+    deliberately different strings and confirms the persisted hash tracks
+    `rendered_prompt`, never `reasoning`.
+    """
+    decision = TimestepLLMDecisionRecord(
+        agent_id="buyer-1",
+        agent_type="buyer",
+        risk_profile="low",
+        utility_type="cara",
+        requested_model="test-vendor/buyer-model",
+        actual_model="test-vendor/buyer-model",
+        success=True,
+        currency_symbol="USDC",
+        chain_name="ethereum",
+        amount=1.0,
+        price=90.0,
+        reasoning="USDC offers the best governance/liquidity trade-off.",
+        rendered_prompt="# System\nYou are a buyer agent...\nCandidates: USDC on ethereum...",
+    )
+
+    entry = _llm_decision_log_entry(decision, "dec-1", "run-1", 0, agent=None, scenario_name="baseline")
+
+    assert entry.rendered_prompt_hash == hash_rendered_prompt(decision.rendered_prompt)
+    assert entry.rendered_prompt_hash != hash_rendered_prompt(decision.reasoning)
+    assert entry.system_prompt == decision.rendered_prompt
+
+
+def test_persist_full_timestep_persists_rendered_prompt_hash_derived_from_the_prompt_not_reasoning():
+    """Fix 1 (Critical, Task 11 review), end-to-end: runs a real use_llm=True
+    day (fixed `reasoning="test reasoning"` for every decision, per
+    `_decision_json`), persists it, and confirms every persisted
+    `LLMDecisionRecord.rendered_prompt_hash` matches
+    `hash_rendered_prompt` of that decision's actual `rendered_prompt` --
+    and that none of them match the old, wrong `hash_rendered_prompt
+    ("test reasoning")` value.
+    """
+    env = Environment.build("baseline", {"consumer": 1, "merchant": 1})
+    for a in env.agents.values():
+        a.assigned_model = "test-vendor/buyer-model" if a.agent_class == "buyer" else "test-vendor/seller-model"
+
+    client = mock_openrouter_client(
+        {
+            "test-vendor/buyer-model": _decision_json(action="OFFER", price=90.0),
+            "test-vendor/seller-model": _decision_json(action="ACCEPT", price=90.0),
+        }
+    )
+    rng = random.Random(0)
+    result = run_timestep(env, day=0, rng=rng, use_llm=True, openrouter_client=client)
+    assert result.llm_decisions
+    assert all(d.rendered_prompt for d in result.llm_decisions)
+
+    session = _session()
+    persist_full_timestep(session, env, result, run_id="run-hash")
+
+    decision_rows = session.query(LLMDecisionRecord).all()
+    expected_hashes = {hash_rendered_prompt(d.rendered_prompt) for d in result.llm_decisions}
+    persisted_hashes = {row.rendered_prompt_hash for row in decision_rows}
+    assert persisted_hashes == expected_hashes
+    assert all(row.system_prompt for row in decision_rows)
+
+    wrong_hash = hash_rendered_prompt("test reasoning")
+    assert wrong_hash not in persisted_hashes
+
+
+def test_persist_full_timestep_is_atomic_a_failure_partway_through_leaves_nothing_committed(monkeypatch):
+    """Fix 2 (Important, Task 11 review): persist_full_timestep used to call
+    persist_timestep (which committed on its own) and then commit again at
+    the end -- two separate transactions for one simulated day. A failure
+    partway through the second phase left agent/transaction/negotiation
+    rows durable while the rest of the day's rows never made it in. Now
+    persist_timestep is called with commit=False and there is exactly one
+    session.commit() at the very end of persist_full_timestep, so an
+    exception anywhere in between must roll back EVERYTHING -- including
+    the agent/transaction rows persist_timestep's own logic adds, which
+    used to be safe from exactly this kind of rollback.
+    """
+    from database.repository import AgentStateRepository
+
+    env = Environment.build("baseline", {"consumer": 2, "merchant": 2})
+    rng = random.Random(0)
+    result = run_timestep(env, day=0, rng=rng)
+    assert env.agents  # sanity: AgentRepository has something to write
+
+    session = _session()
+
+    def _boom(self, entry):
+        raise RuntimeError("simulated failure mid-persistence")
+
+    monkeypatch.setattr(AgentStateRepository, "record", _boom)
+
+    with pytest.raises(RuntimeError):
+        persist_full_timestep(session, env, result, run_id="run-atomic")
+
+    session.rollback()
+
+    assert session.query(AgentRecord).count() == 0
+    assert session.query(TransactionRecord).count() == 0
+    assert session.query(TimestepLogRecord).count() == 0
+    assert session.query(AgentStateRecord).count() == 0
+
+
+def test_persist_full_timestep_gas_fee_columns_read_chain_config_gas_fee_directly():
+    """Fix 3/4 (Important, Task 11 review): the dead `if "ethereum"/"solana"
+    in env.chains` guards were removed (env.chains is always the full chain
+    universe -- both Environment.build and Environment.build_from_population
+    call load_chain_universe() unconditionally). This pins the current,
+    intentional values: eth_gas_fee_gwei/solana_gas_fee_usd both read
+    ChainConfig.gas_fee directly, which is USD-denominated everywhere else
+    in the codebase (a pre-existing eth_gas_fee_gwei naming mismatch this
+    fix pass documents, but does not rename).
+    """
+    env = Environment.build("baseline", {"consumer": 1, "merchant": 1})
+    rng = random.Random(0)
+    result = run_timestep(env, day=0, rng=rng)
+
+    session = _session()
+    persist_full_timestep(session, env, result, run_id="run-gas")
+
+    row = session.query(TimestepLogRecord).filter_by(run_id="run-gas", timestep=0).one()
+    assert row.eth_gas_fee_gwei == env.chains["ethereum"].gas_fee
+    assert row.solana_gas_fee_usd == env.chains["solana"].gas_fee

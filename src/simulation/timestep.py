@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 from src.agents.base_agent import BaseAgent
 from src.agents.buyer_agent import BuyerAgent
 from src.agents.seller_agent import SellerAgent
+from src.agents.wealth import advance_price_index
 from src.blockchain.routing_engine import generate_candidates
 from src.economy.fx_tax import compute_fx_tax, load_fx_params
 from src.economy.shocks import ShockEvent, ShockType, apply_currency_shock, apply_shock
@@ -59,11 +60,20 @@ class LLMDecisionRecord(BaseModel):
     Deliberately a thin, additive shape -- not a 1:1 mirror of
     `database.repository.LLMDecisionLogEntry`/`HallucinationLogEntry` --
     since several of those records' fields (simulation_id, prompt_version,
-    rendered_prompt_hash, scenario, domestic_or_cross_border,
-    governance_prompt_enabled) are run/experiment-level concerns that
-    run_timestep has no opinion about; the persistence task is expected to
-    fill those in from its own caller context while pulling the rest
-    (agent/model/decision/hallucination fields) straight from here.
+    scenario, domestic_or_cross_border, governance_prompt_enabled) are
+    run/experiment-level concerns that run_timestep has no opinion about;
+    the persistence task is expected to fill those in from its own caller
+    context while pulling the rest (agent/model/decision/hallucination
+    fields) straight from here.
+
+    `rendered_prompt` (the actual prompt text sent to the model, captured in
+    `decide_single_model` right after `render_prompt` runs) IS carried here,
+    despite the "run-level concern" framing above -- it isn't a
+    run/experiment-level concern, it's per-decision data this module already
+    computes and would otherwise silently drop. `database/repository.py`'s
+    `_llm_decision_log_entry` derives `rendered_prompt_hash`/`system_prompt`
+    from it (a Task 11 review fix: it previously hashed `reasoning` -- the
+    model's OUTPUT -- instead, which produced a real-looking but wrong hash).
     """
 
     agent_id: str
@@ -83,6 +93,7 @@ class LLMDecisionRecord(BaseModel):
     amount: float | None = None
     price: float | None = None
     reasoning: str | None = None
+    rendered_prompt: str | None = None
     hallucination: HallucinationResult | None = None
 
 
@@ -165,6 +176,15 @@ def decide_single_model(
 
     schema_json = json.dumps(Decision.model_json_schema())
     prompt = render_prompt(agent_class, context, schema_json)
+    if telemetry is not None:
+        # Captured unconditionally (before the model call, which may fail) so
+        # the caller can always recover the exact text this decision was
+        # made from -- see LLMDecisionRecord.rendered_prompt's docstring.
+        # Deliberately the ORIGINAL rendered prompt, not the corrected
+        # re-prompt below: this decision's provenance is "what render_prompt
+        # produced for this round", one value per decision, matching
+        # prompt_version's own one-per-decision granularity.
+        telemetry["rendered_prompt"] = prompt
 
     try:
         decision = call_model(prompt, model_id, client)
@@ -278,6 +298,7 @@ def _make_llm_decide_closure(
                 amount=action.amount if action is not None else None,
                 price=action.price if action is not None else None,
                 reasoning=action.reasoning if action is not None else None,
+                rendered_prompt=telemetry.get("rendered_prompt"),
                 hallucination=hallucination,
             )
         )
@@ -401,6 +422,17 @@ def run_timestep(
     # whether any shock fired today (a quiet day is a valid input that
     # still drives recovery toward baseline).
     env.trust_ledger.update(due_shocks, env.currencies)
+
+    # Fix 5 (Task 11 review): env.price_index previously had zero callers
+    # anywhere, so it stayed at its constructed 1.0 forever and
+    # real_purchasing_power never actually reflected inflation -- only
+    # nominal wallet changes. Advance it here, once per day, right alongside
+    # trust_ledger.update -- this is core day-loop-owned simulation state
+    # (evolves whether or not persistence happens today), not
+    # persistence-owned state, matching how trust_ledger/event_log are
+    # already treated. Uses env.macro_state.inflation AFTER this day's
+    # shocks have been applied above, same timing trust_ledger.update uses.
+    env.price_index = advance_price_index(env.price_index, env.macro_state.inflation)
 
     # LLM-path environment-level context, built/fetched exactly once per
     # day (not per agent, not per buyer/good pairing below) -- live prices,
