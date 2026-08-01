@@ -27,7 +27,10 @@ from src.currencies.currency import load_currency_universe
 from src.currencies.exchange_rates import ExchangeRateTable
 from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
 from src.economy.macro_state import MacroState
-from src.simulation.matrix_runner import MASTER_SCENARIO_NAME, _seed_sandbox_wallets, run_matrix
+from src.economy.sandbox_scenarios import build_sandbox_scenario
+from src.economy.shocks import ShockType, load_scenario
+from src.simulation.environment import Environment
+from src.simulation.matrix_runner import MASTER_SCENARIO_NAME, _build_cell_specs, _seed_sandbox_wallets, run_matrix
 from tests.llm_test_helpers import mock_openrouter_client
 
 MODEL_CANDIDATES = ["vendor/fake-model"]
@@ -291,6 +294,58 @@ def test_run_matrix_can_be_called_twice_against_the_same_database_without_collid
     assert first_run_ids.isdisjoint(second_run_ids)
 
     assert session.query(SimulationRunRecord).count() == 26
+
+
+def test_cell_specs_tag_sandbox_cells_with_their_sandbox_key_and_master_with_none():
+    """Regression test for the sandbox-scenario wiring fix: _build_cell_specs
+    must identify which of the 12 sandbox cells belongs to which sandbox (so
+    run_matrix can look up that sandbox's own build_sandbox_scenario result),
+    while the master cell must NOT be tagged (it keeps master_simulation.yaml
+    unmodified)."""
+    specs = {spec.key: spec for spec in _build_cell_specs()}
+
+    assert specs["master"].sandbox_key is None
+    for sandbox_name in SANDBOX_CURRENCY_PAIRS:
+        assert specs[f"{sandbox_name}_domestic"].sandbox_key == sandbox_name
+        assert specs[f"{sandbox_name}_cross_border"].sandbox_key == sandbox_name
+
+
+def test_sandbox_cells_are_constructed_with_their_own_sandbox_scenario_not_the_raw_master_one():
+    """Confirms the actual cell-construction path (Environment.build_from_
+    population, called the same way run_matrix's cell loop calls it) wires a
+    sandbox cell to build_sandbox_scenario's ScenarioConfig, not
+    master_simulation.yaml's shock schedule verbatim. No simulated days are
+    run here -- this is a construction-time check, kept fast."""
+    specs = {spec.key: spec for spec in _build_cell_specs()}
+    master_spec = specs["master"]
+    sandbox_spec = specs["liquidity_vs_governance_domestic"]
+    assert sandbox_spec.sandbox_key == "liquidity_vs_governance"
+
+    base_scenario = load_scenario(MASTER_SCENARIO_NAME)
+    option_a, option_b = SANDBOX_CURRENCY_PAIRS["liquidity_vs_governance"]
+    sandbox_scenario = build_sandbox_scenario("liquidity_vs_governance", option_a, option_b, base_scenario)
+
+    population = generate_agent_population(0, MODEL_CANDIDATES)
+    master_env = Environment.build_from_population(
+        MASTER_SCENARIO_NAME, population, currencies=master_spec.currencies, scenario=base_scenario
+    )
+    sandbox_env = Environment.build_from_population(
+        MASTER_SCENARIO_NAME, population, currencies=sandbox_spec.currencies, scenario=sandbox_scenario
+    )
+
+    assert master_env.scenario.name == "master_simulation"
+    assert sandbox_env.scenario.name == "liquidity_vs_governance_sandbox"
+
+    sandbox_symbols = {option_a.symbol, option_b.symbol}
+    currency_targeted = [s for s in sandbox_env.scenario.shocks if s.target_currency is not None]
+    assert len(currency_targeted) == 3
+    assert all(s.target_currency in sandbox_symbols for s in currency_targeted)
+    assert {s.type for s in currency_targeted} >= {ShockType.CRISIS_WARNING, ShockType.DEPEG_EVENT}
+
+    # The master cell's own scenario must remain untouched (still names only
+    # real-universe symbols from master_simulation.yaml).
+    master_currency_targeted = {s.target_currency for s in master_env.scenario.shocks if s.target_currency is not None}
+    assert master_currency_targeted.isdisjoint(sandbox_symbols)
 
 
 def test_run_matrix_with_the_same_explicit_matrix_run_id_twice_does_collide():

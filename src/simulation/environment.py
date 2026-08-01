@@ -83,6 +83,7 @@ class Environment:
         agents: list[BaseAgent],
         currencies: dict[str, CurrencyConfig] | None = None,
         goods: list[Good] | None = None,
+        scenario: ScenarioConfig | None = None,
     ) -> "Environment":
         """Build an Environment from an already-constructed agent population.
 
@@ -92,8 +93,20 @@ class Environment:
         9-currency universe; a caller-supplied dict (e.g. one of
         `SANDBOX_CURRENCY_PAIRS`) is used as-is -- the hook the 6
         factor-isolation sandboxes use.
+
+        `scenario`, if given, is used AS-IS instead of loading `scenario_name`
+        from YAML -- the hook the matrix runner's 12 sandbox cells use to pass
+        a `build_sandbox_scenario`-constructed `ScenarioConfig` (whose shocks
+        actually target that sandbox's own synthetic currency symbols, unlike
+        `master_simulation.yaml`'s real-universe-only currency-targeted
+        shocks) while `scenario_name` still identifies which base scenario it
+        was derived from for logging/provenance purposes. `scenario_name` is
+        still loaded from YAML when `scenario` is omitted, matching this
+        method's behavior before this parameter existed.
         """
         resolved_currencies = currencies if currencies is not None else load_currency_universe()
         chains = load_chain_universe()
-        scenario = load_scenario(scenario_name)
-        return cls(currencies=resolved_currencies, chains=chains, scenario=scenario, agents=agents, goods=goods)
+        resolved_scenario = scenario if scenario is not None else load_scenario(scenario_name)
+        return cls(
+            currencies=resolved_currencies, chains=chains, scenario=resolved_scenario, agents=agents, goods=goods
+        )

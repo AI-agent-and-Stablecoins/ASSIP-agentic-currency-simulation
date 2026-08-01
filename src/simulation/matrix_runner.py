@@ -5,11 +5,25 @@ Global Constraints -- confirmed 6 sandboxes, not 7): the master simulation
 (full 9-currency universe, domestic pairing) + 6 factor-isolation sandboxes,
 each run once domestically and once cross-border (12 sandbox cells), each
 sandbox using its own synthetic 2-currency pair
-(`src.currencies.sandbox_currencies.SANDBOX_CURRENCY_PAIRS`) and the shared
-365-day `master_simulation` shock schedule (Sec 9's "Resolution: reusing one
-shock schedule across all 13 cells keeps every cell's macro/shock
-conditions identical, isolating the currency-universe restriction as the
-only difference between cells").
+(`src.currencies.sandbox_currencies.SANDBOX_CURRENCY_PAIRS`).
+
+Per-cell scenario: the master cell uses the unmodified `master_simulation`
+`ScenarioConfig` (loaded once, as `base_scenario`, and reused verbatim). Each
+of the 12 sandbox cells instead uses `src.economy.sandbox_scenarios
+.build_sandbox_scenario`'s per-sandbox `ScenarioConfig` -- built once per
+sandbox (not per cell/seed) from that same `base_scenario` -- rather than
+`master_simulation.yaml`'s shock schedule verbatim: `master_simulation
+.yaml`'s 13 currency-targeted shocks name real-universe symbols exclusively
+(USDC, PAXG, EURT, ...), none of which exist in any sandbox's synthetic
+2-currency universe, so reusing it as-is would leave every currency-targeted
+shock silently inert for all 12 sandbox cells (only its 5 macro-level shocks
+would still apply). `build_sandbox_scenario` keeps those same 5 macro-level
+shocks and adds two shocks of its own that target one of that sandbox's
+actual currency symbols -- see that module's docstring for the full
+per-sandbox rationale. Every cell's macro backdrop (`initial_state`,
+`duration_days`) and 5 macro-level shocks still trace back to the same
+`master_simulation.yaml` file, so the currency-universe restriction remains
+the primary difference between the master and sandbox cells.
 
 Cross-border pairing mechanism (this task's own open design question,
 resolved after reading `src/market/marketplace.py` in full): today,
@@ -131,6 +145,8 @@ from src.agents.population import generate_agent_population
 from src.currencies.currency import CurrencyConfig, load_currency_universe
 from src.currencies.exchange_rates import ExchangeRateTable
 from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
+from src.economy.sandbox_scenarios import build_sandbox_scenario
+from src.economy.shocks import ScenarioConfig, load_scenario
 from src.llm.agent_reasoning import PROMPT_VERSIONS, hash_rendered_prompt
 from src.llm.llm_router import verify_model_candidates
 from src.market.marketplace import Listing, Marketplace
@@ -213,14 +229,29 @@ class _CellSpec(BaseModel):
     key: str
     currencies: dict[str, CurrencyConfig] | None  # None -> full real universe
     cross_border: bool
+    # None for the master cell (uses the unmodified master_simulation.yaml
+    # scenario); one of SANDBOX_CURRENCY_PAIRS's keys for the 12 sandbox
+    # cells, identifying which of run_matrix's precomputed
+    # build_sandbox_scenario results this cell should use -- see
+    # src/economy/sandbox_scenarios.py for why the sandboxes need their own
+    # scenario rather than reusing master_simulation.yaml's shocks verbatim
+    # (those target real-universe currency symbols exclusively, which no
+    # sandbox's synthetic 2-currency universe ever holds).
+    sandbox_key: str | None = None
 
 
 def _build_cell_specs() -> list[_CellSpec]:
-    specs = [_CellSpec(key="master", currencies=None, cross_border=False)]
+    specs = [_CellSpec(key="master", currencies=None, cross_border=False, sandbox_key=None)]
     for sandbox_name, (option_a, option_b) in SANDBOX_CURRENCY_PAIRS.items():
         pair = {option_a.symbol: option_a, option_b.symbol: option_b}
-        specs.append(_CellSpec(key=f"{sandbox_name}_domestic", currencies=pair, cross_border=False))
-        specs.append(_CellSpec(key=f"{sandbox_name}_cross_border", currencies=pair, cross_border=True))
+        specs.append(
+            _CellSpec(key=f"{sandbox_name}_domestic", currencies=pair, cross_border=False, sandbox_key=sandbox_name)
+        )
+        specs.append(
+            _CellSpec(
+                key=f"{sandbox_name}_cross_border", currencies=pair, cross_border=True, sandbox_key=sandbox_name
+            )
+        )
     return specs
 
 
@@ -356,14 +387,28 @@ def run_matrix(
     prompt_version_hash = _prompt_version_hash()
     real_currency_universe = load_currency_universe()
 
+    # The master scenario, loaded once and reused unmodified by the master
+    # cell; also the macro/shock backdrop every sandbox scenario below is
+    # derived from. Precomputing all 6 sandbox ScenarioConfigs once here
+    # (rather than per cell/seed) mirrors how `available_models` is resolved
+    # once for the whole matrix -- none of this depends on seed.
+    base_scenario = load_scenario(MASTER_SCENARIO_NAME)
+    sandbox_scenarios: dict[str, ScenarioConfig] = {
+        sandbox_name: build_sandbox_scenario(sandbox_name, option_a, option_b, base_scenario)
+        for sandbox_name, (option_a, option_b) in SANDBOX_CURRENCY_PAIRS.items()
+    }
+
     results: list[MatrixCellResult] = []
 
     for spec in _build_cell_specs():
         config_hash = compute_config_hash(_config_paths_for(spec))
+        cell_scenario = base_scenario if spec.sandbox_key is None else sandbox_scenarios[spec.sandbox_key]
 
         for seed in seeds:
             population = generate_agent_population(seed, available_models)
-            env = Environment.build_from_population(MASTER_SCENARIO_NAME, population, currencies=spec.currencies)
+            env = Environment.build_from_population(
+                MASTER_SCENARIO_NAME, population, currencies=spec.currencies, scenario=cell_scenario
+            )
             if spec.currencies is not None:
                 _seed_sandbox_wallets(
                     env.agents, spec.currencies, real_currency_universe, env.macro_state.peg_reference_rates
