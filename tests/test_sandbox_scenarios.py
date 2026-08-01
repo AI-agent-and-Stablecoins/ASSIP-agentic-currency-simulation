@@ -21,6 +21,7 @@ unconditionally.
 
 import pytest
 
+from src.currencies.currency import AssetClass
 from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
 from src.economy.shocks import ShockType, apply_currency_shock, load_scenario
 from src.economy.sandbox_scenarios import _SANDBOX_SHOCK_PLANS, build_sandbox_scenario
@@ -179,6 +180,33 @@ def test_additional_shock_genuinely_mutates_currency_or_trust_state(sandbox_key)
         assert ledger.liquidity_offset(target) < baseline_liquidity_offset
     else:
         pytest.fail(f"Unexpected additional_shock_type for {sandbox_key}: {plan.additional_shock_type}")
+
+
+@pytest.mark.parametrize("sandbox_key", ["asset_backing_vs_liquidity", "asset_backing_vs_stability"])
+def test_h4_depeg_pair_targets_the_non_gold_option_in_gold_backed_sandboxes(sandbox_key):
+    """H4 (crisis proximity -> gold preference) predicts agents shift TOWARD
+    gold under crisis proximity. That's only measurable as "flight to gold"
+    if the crisis_warning/depeg_event pair stresses the NON-gold currency --
+    targeting gold itself would put the crisis on the option agents are
+    predicted to flee TOWARD, leaving no non-gold currency to flee FROM.
+    `asset_backing_vs_liquidity` and `asset_backing_vs_stability` are the
+    only two sandboxes with a gold-backed option at all (via CurrencyConfig's
+    asset_class, not a hardcoded symbol-string assumption), so this checks
+    both directly against SANDBOX_CURRENCY_PAIRS."""
+    option_a, option_b = SANDBOX_CURRENCY_PAIRS[sandbox_key]
+    gold_option, non_gold_option = (
+        (option_a, option_b) if option_a.asset_class == AssetClass.GOLD_BACKED else (option_b, option_a)
+    )
+    assert gold_option.asset_class == AssetClass.GOLD_BACKED
+    assert non_gold_option.asset_class != AssetClass.GOLD_BACKED
+
+    scenario = build_sandbox_scenario(sandbox_key, option_a, option_b, _BASE_SCENARIO)
+    depeg_shock = next(s for s in scenario.shocks if s.type == ShockType.DEPEG_EVENT)
+    warning_shock = next(s for s in scenario.shocks if s.type == ShockType.CRISIS_WARNING)
+
+    assert depeg_shock.target_currency == non_gold_option.symbol
+    assert warning_shock.target_currency == non_gold_option.symbol
+    assert depeg_shock.target_currency != gold_option.symbol
 
 
 def test_build_sandbox_scenario_raises_keyerror_for_unknown_sandbox_key():

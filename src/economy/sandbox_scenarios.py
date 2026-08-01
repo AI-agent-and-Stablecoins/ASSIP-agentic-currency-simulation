@@ -21,7 +21,18 @@ YAML files -- the sandbox symbols are Python-constructed, per
 adds, per sandbox:
 
 1. One `crisis_warning` -> `depeg_event` pair targeting one of that
-   sandbox's two currency symbols, making H4 testable there.
+   sandbox's two currency symbols, giving every sandbox a genuine
+   crisis-proximity shock (exercising the shock mechanism and TrustLedger
+   dynamics) that stress-tests its own currency pair. H4's gold-preference
+   DIRECTION specifically, however, is only meaningfully testable in the
+   two sandboxes that actually contain a gold-backed option --
+   `asset_backing_vs_liquidity` and `asset_backing_vs_stability` -- since
+   only there is there a gold currency for agents to shift TOWARD. In
+   those two sandboxes the pair deliberately targets the NON-gold option,
+   so a flight-to-gold response is observable; the other 4 sandboxes have
+   no gold option at all, so their crisis/depeg pairs test the general
+   crisis-proximity mechanism and each sandbox's own isolated factor, not
+   H4's gold-preference direction.
 2. One additional currency-targeted shock relevant to the OTHER factor that
    sandbox isolates (e.g. `liquidity_crunch` on the lower-liquidity option
    in a liquidity-vs-X sandbox), so both of a sandbox's isolated dimensions
@@ -104,28 +115,42 @@ _SANDBOX_SHOCK_PLANS: dict[str, _SandboxShockPlan] = {
         additional_shock_target="b",
         additional_shock_magnitude=0.20,
     ),
-    # option_a=SBX4_GOLD_LOLIQ (liquidity 0.70), option_b=SBX4_STABLE_HILIQ
-    # (liquidity 0.99). governance_score/peg_error are held constant; depeg
-    # targets the lower-liquidity side (option_a). Additional shock:
-    # liquidity_crunch on the same symbol, directly stressing this
-    # sandbox's isolated liquidity dimension.
+    # option_a=SBX4_GOLD_LOLIQ (the GOLD-BACKED option, liquidity 0.70),
+    # option_b=SBX4_STABLE_HILIQ (liquidity 0.99). governance_score/peg_error
+    # are held constant. Depeg target: option_b, the NON-gold option --
+    # this sandbox is one of the two (with asset_backing_vs_stability) that
+    # actually contains a gold-backed currency, so it's where H4 (crisis
+    # proximity -> gold preference) is meaningfully testable: the
+    # crisis_warning/depeg_event pair must stress the currency agents would
+    # flee FROM, not the gold option they're predicted to flee TOWARD.
+    # Targeting option_a (gold itself) would put the crisis on gold and make
+    # a flight-to-gold response unmeasurable -- there'd be no non-gold
+    # currency left to flee. Additional shock: liquidity_crunch on option_a
+    # (gold, the lower-liquidity side), directly stressing this sandbox's
+    # isolated liquidity dimension.
     "asset_backing_vs_liquidity": _SandboxShockPlan(
-        depeg_target="a",
+        depeg_target="b",
         depeg_gap_days=20,
         additional_shock_type=ShockType.LIQUIDITY_CRUNCH,
         additional_shock_target="a",
         additional_shock_magnitude=0.20,
     ),
-    # option_a=SBX5_GOLD_LOSTAB (peg_error 0.015, the worse-stability side),
-    # option_b=SBX5_DEPOSIT_HISTAB (a bank-issued tokenized deposit).
-    # governance_score/liquidity_score are held constant; depeg targets the
-    # weaker-stability side (option_a). Additional shock:
-    # regulatory_enforcement on option_b -- thematically apt for a
-    # bank-issued deposit token, and (like governance_downgrade)
-    # `apply_currency_shock` actually mutates issuer_risk for this shock
-    # type, giving a clean end-to-end mutation test.
+    # option_a=SBX5_GOLD_LOSTAB (the GOLD-BACKED option, peg_error 0.015, the
+    # worse-stability side), option_b=SBX5_DEPOSIT_HISTAB (a bank-issued
+    # tokenized deposit). governance_score/liquidity_score are held
+    # constant. Depeg target: option_b, the NON-gold option -- the other of
+    # the two sandboxes where H4 is meaningfully testable (see
+    # asset_backing_vs_liquidity above for the full reasoning): the
+    # crisis/depeg pair must stress the non-gold deposit token so a shift
+    # toward option_a (gold) is an observable flight-to-gold response, not
+    # target gold itself and make that response unmeasurable. Additional
+    # shock: regulatory_enforcement on option_b (the same non-gold deposit
+    # token) -- thematically apt for a bank-issued deposit, and (like
+    # governance_downgrade) `apply_currency_shock` actually mutates
+    # issuer_risk for this shock type, giving a clean end-to-end mutation
+    # test.
     "asset_backing_vs_stability": _SandboxShockPlan(
-        depeg_target="a",
+        depeg_target="b",
         depeg_gap_days=0,
         additional_shock_type=ShockType.REGULATORY_ENFORCEMENT,
         additional_shock_target="b",

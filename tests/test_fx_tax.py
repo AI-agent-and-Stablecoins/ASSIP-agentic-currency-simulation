@@ -15,6 +15,7 @@ from src.market.goods import Good
 from src.simulation.environment import Environment
 from src.simulation.timestep import run_timestep
 from src.transactions.transaction import TransactionStatus
+from tests.llm_test_helpers import mock_openrouter_client
 
 
 def test_load_fx_params_reads_the_real_config():
@@ -122,6 +123,92 @@ def test_cross_zone_counterparty_transaction_pays_strictly_more_fx_tax_than_same
 
     same_zone_result = run_timestep(same_zone_env, day=0, rng=random.Random(0))
     cross_zone_result = run_timestep(cross_zone_env, day=0, rng=random.Random(0))
+
+    same_zone_settled = [tx for tx in same_zone_result.transactions if tx.status == TransactionStatus.SETTLED]
+    cross_zone_settled = [tx for tx in cross_zone_result.transactions if tx.status == TransactionStatus.SETTLED]
+    assert len(same_zone_settled) == 1
+    assert len(cross_zone_settled) == 1
+
+    same_zone_tx = same_zone_settled[0]
+    cross_zone_tx = cross_zone_settled[0]
+
+    # Same currency, same negotiated/settled price -- the only difference
+    # between the two scenarios is the buyer/seller zone pairing.
+    assert same_zone_tx.currency_symbol == cross_zone_tx.currency_symbol == "USDC"
+    assert same_zone_tx.paid_value == pytest.approx(cross_zone_tx.paid_value)
+
+    # USDC's own settlement-currency zone (USD) matches the buyer's zone
+    # (USD) in BOTH scenarios, so compute_fx_tax alone is zero for both --
+    # this isolates compute_counterparty_zone_tax as the sole source of the
+    # difference below.
+    assert same_zone_tx.fx_tax_paid == 0.0
+    assert cross_zone_tx.fx_tax_paid > same_zone_tx.fx_tax_paid
+    assert cross_zone_tx.fx_tax_paid == pytest.approx(cross_zone_tx.paid_value * 0.0002)
+
+
+_BUYER_MODEL = "test-vendor/buyer-model"
+_SELLER_MODEL = "test-vendor/seller-model"
+
+
+def _decision_json(action: str, price: float) -> dict:
+    return {
+        "action": action,
+        "proposed_currency": "USDC",
+        "proposed_chain": "ethereum",
+        "amount": 1.0,
+        "price": price,
+        "reasoning": "test reasoning",
+    }
+
+
+def _build_single_pair_env_with_models(buyer_zone: str, seller_zone: str) -> Environment:
+    """LLM-path counterpart to `_build_single_pair_env`: same one-buyer,
+    one-seller, one-good, USDC-only setup, but with `assigned_model` set on
+    both agents so `run_timestep(..., use_llm=True)` drives the negotiation
+    through the mocked OpenRouter client instead of the rule-based path."""
+    profiles = load_agent_profiles()
+    buyer = build_agent(
+        profiles["consumer"],
+        currency_zone=buyer_zone,
+        assigned_model=_BUYER_MODEL,
+        agent_id="fx-tax-llm-buyer",
+    )
+    seller = build_agent(
+        profiles["merchant"],
+        currency_zone=seller_zone,
+        assigned_model=_SELLER_MODEL,
+        agent_id="fx-tax-llm-seller",
+    )
+    buyer.wallet.balances = {"USDC": 100_000.0}
+    seller.wallet.balances = {"USDC": 100_000.0}
+
+    good = Good(name="widget", category="cloud_compute", base_price_usd=100.0)
+    return Environment.build_from_population("master_simulation", [buyer, seller], goods=[good])
+
+
+def test_cross_zone_counterparty_transaction_pays_strictly_more_fx_tax_than_same_zone_llm_path():
+    """LLM-path (use_llm=True) mirror of
+    test_cross_zone_counterparty_transaction_pays_strictly_more_fx_tax_than_same_zone
+    above: same economically identical setup (same currency, same
+    negotiated price -- forced via the mocked OFFER/ACCEPT decisions below),
+    but driving the LLM-vs-LLM negotiation call site in run_timestep instead
+    of the rule-based one, confirming compute_counterparty_zone_tax's
+    cross-zone-vs-same-zone distinction holds on both Transaction-
+    construction call sites, not just the deterministic one."""
+    client = mock_openrouter_client(
+        {
+            _BUYER_MODEL: _decision_json(action="OFFER", price=90.0),
+            _SELLER_MODEL: _decision_json(action="ACCEPT", price=90.0),
+        }
+    )
+
+    same_zone_env = _build_single_pair_env_with_models(buyer_zone="USD", seller_zone="USD")
+    cross_zone_env = _build_single_pair_env_with_models(buyer_zone="USD", seller_zone="EUR")
+
+    same_zone_result = run_timestep(same_zone_env, day=0, rng=random.Random(0), use_llm=True, openrouter_client=client)
+    cross_zone_result = run_timestep(
+        cross_zone_env, day=0, rng=random.Random(0), use_llm=True, openrouter_client=client
+    )
 
     same_zone_settled = [tx for tx in same_zone_result.transactions if tx.status == TransactionStatus.SETTLED]
     cross_zone_settled = [tx for tx in cross_zone_result.transactions if tx.status == TransactionStatus.SETTLED]
