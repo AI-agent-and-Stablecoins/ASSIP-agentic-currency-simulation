@@ -99,19 +99,34 @@ passed. A caller may still pass their own mock `openrouter_client` (e.g.
 without touching a real API -- `run_matrix` doesn't care which kind of
 client it was handed, only that `dry_run=False` guarantees a real one.
 
-This module deliberately does NOT construct mock `httpx.Client`s internally
+This module does NOT construct mock `httpx.Client`s internally BY DEFAULT
 (unlike the design spec Sec 10's literal wording, "both clients are
 mock-transport fakes constructed internally if not supplied") -- the task
 brief that superseded that spec explicitly left this as the implementer's
 call ("or just skip use_llm/live-price wiring entirely in dry-run if
-that's simpler"). Building mock clients internally would mean importing
-`tests/llm_test_helpers.py` (a tests-only module) from `src/`, which this
-codebase never does elsewhere. Instead, when no `openrouter_client` is
-supplied (the common `dry_run=True` case), the day loop simply runs the
-deterministic rule-based path (`use_llm=False`) -- zero network access,
-zero mock-client bookkeeping, and still exercises every other mechanism
-this task must integrate (population generation, environment construction,
-cross-border pairing, sandbox wallet seeding, persistence, provenance).
+that's simpler"). Instead, when no `openrouter_client` is supplied (the
+common `dry_run=True` case), the day loop simply runs the deterministic
+rule-based path (`use_llm=False`) -- zero network access, zero mock-client
+bookkeeping, and still exercises every other mechanism this task must
+integrate (population generation, environment construction, cross-border
+pairing, sandbox wallet seeding, persistence, provenance).
+
+A later fix round revisited this for one specific, narrow reason: `run_
+matrix`'s OWN test suite (`tests/test_matrix_runner.py`) never exercised
+the LLM-decision + LLM-decision-persistence path end-to-end, since every
+test used `dry_run=True` with no client supplied. `exercise_llm_path:
+bool = False` closes that gap without changing the default path at all:
+when `True` AND `dry_run=True`, `run_matrix` builds mock clients
+internally via `tests/llm_test_helpers.py`'s `mock_openrouter_client`/
+`mock_polygon_client` (only for whichever of `openrouter_client`/
+`polygon_client` the caller didn't already supply -- a caller-supplied
+client is always respected as-is) and runs with `use_llm=True`. This DOES
+mean `src/simulation/matrix_runner.py` imports `tests/llm_test_helpers.py`
+-- a tests-only module -- but only inside the `exercise_llm_path` branch
+(a local import, not a module-level one), and only when a caller
+explicitly opts in; the default (`exercise_llm_path=False`) path never
+touches `tests/` and behaves exactly as before. Every existing caller/test
+that doesn't pass `exercise_llm_path=True` sees zero behavior change.
 
 Model-candidate verification (`src.llm.llm_router.verify_model_candidates`)
 is called at most ONCE per `run_matrix` call -- not once per cell/seed --
@@ -130,10 +145,52 @@ ever") unconditional rather than dependent on what the caller happened to
 pass in. The resulting `available_models` list is cached in a local
 variable and reused by every `generate_agent_population` call in the
 matrix.
+
+Memory, progress, and per-cell error recovery (a later fix round, aimed at
+real-scale runs -- 13 cells x 5 seeds x 365 days -- rather than this
+module's own fast tests): three related, additive parameters.
+
+- `keep_daily_results: bool = False` (new default). Every `TimestepResult`
+  is already durably persisted via `persist_full_timestep` the moment it's
+  produced; retaining the full day-by-day list in `MatrixCellResult
+  .daily_results` on top of that, for every cell/seed of a real run, is
+  tens of thousands of objects (including full negotiation logs and LLM
+  reasoning strings) held in memory for no reason. When `False`,
+  `daily_results` stays empty and only cheap per-cell aggregates
+  (`num_days_completed`, `total_transactions`, `total_llm_decisions`) are
+  kept. Passing `True` restores the original full-retention behavior
+  (every test written before this fix round that reads `.daily_results`
+  now passes `keep_daily_results=True` explicitly).
+- `progress_callback: Callable[[str, int, int], None] | None = None`.
+  Called once per simulated day, right after that day's
+  `persist_full_timestep`, as `progress_callback(cell_key, seed, day)`.
+  `run_matrix` hardcodes no logging/display mechanism of its own -- a
+  caller driving a real multi-week run wires in whatever progress
+  reporting it wants. `None` (the default) is a no-op: zero behavior
+  change for every existing caller.
+- Per-cell/seed error recovery. Each cell/seed's day loop (from
+  `random.Random(seed)` through appending that cell/seed's
+  `MatrixCellResult`) is wrapped in a `try/except Exception`; a failure
+  aborts only that cell/seed's remaining days (day-to-day state within a
+  cell is sequential/stateful, so partial completion of one cell/seed is
+  not meaningfully resumable mid-cell) and is recorded as `(cell_key,
+  seed, exception)` in a `failures` list, rather than propagating and
+  losing every other cell/seed's results. `run_matrix` therefore returns
+  `(results, failures)` -- a 2-tuple -- rather than a bare
+  `list[MatrixCellResult]`; `failures` is empty on a fully clean run. The
+  session is rolled back before continuing to the next cell/seed, so an
+  uncommitted partial day never corrupts a later cell/seed's commits.
+  Population generation, environment construction, and the
+  `SimulationRunRepository`/`session.commit()` call that registers this
+  cell/seed's `run_id` all stay OUTSIDE this try/except, deliberately: a
+  colliding `run_id` (see `matrix_run_id`'s docstring) must still raise
+  `IntegrityError` straight to the caller, not be silently downgraded to a
+  `failures` entry.
 """
 
 import random
 from pathlib import Path
+from typing import Callable
 
 import httpx
 from pydantic import BaseModel, ConfigDict
@@ -178,9 +235,16 @@ _CURRENCY_UNIVERSE_PATHS: list[Path] = sorted((CONFIG_ROOT / "currencies").glob(
 
 class MatrixCellResult(BaseModel):
     """One experiment cell's outcome for one seed: which cell, which run_id
-    it was persisted under, and every simulated day's `TimestepResult` (so
-    callers/tests can inspect transactions/negotiations/decisions without
-    re-querying the database)."""
+    it was persisted under, cheap per-cell aggregates
+    (`num_days_completed`/`total_transactions`/`total_llm_decisions`,
+    always populated), and -- only when `run_matrix(keep_daily_results=
+    True)` -- every simulated day's full `TimestepResult` in
+    `daily_results`, so callers/tests can inspect transactions/
+    negotiations/decisions without re-querying the database. When
+    `keep_daily_results=False` (the default), `daily_results` stays empty:
+    every day is already durably persisted via `persist_full_timestep` as
+    it happens, so retaining the full list too is pure redundancy at real
+    scale (see this module's docstring)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -189,6 +253,9 @@ class MatrixCellResult(BaseModel):
     seed: int
     is_cross_border: bool
     num_currencies: int
+    num_days_completed: int = 0
+    total_transactions: int = 0
+    total_llm_decisions: int = 0
     daily_results: list[TimestepResult] = []
 
 
@@ -332,8 +399,40 @@ def run_matrix(
     polygon_client: httpx.Client | None = None,
     session: Session | None = None,
     matrix_run_id: str | None = None,
-) -> list[MatrixCellResult]:
+    keep_daily_results: bool = False,
+    progress_callback: Callable[[str, int, int], None] | None = None,
+    exercise_llm_path: bool = False,
+) -> tuple[list[MatrixCellResult], list[tuple[str, int, Exception]]]:
     """Run the 13-cell x `seeds` experiment matrix for `num_days` days each.
+
+    Returns `(results, failures)`. `failures` is a list of
+    `(cell_key, seed, exception)` for any cell/seed whose day loop raised --
+    that cell/seed's remaining days are aborted (day-to-day state within a
+    cell is sequential, so there is no meaningful way to resume mid-cell),
+    but every OTHER cell/seed in the matrix still runs. `failures` is empty
+    on a fully clean run; every pre-existing test (before this parameter
+    existed) asserts `failures == []`.
+
+    `keep_daily_results` (default `False`) controls whether each
+    `MatrixCellResult.daily_results` retains every simulated day's full
+    `TimestepResult` (the original, pre-fix behavior, restored by passing
+    `True`) or stays empty, relying on the already-durable
+    `persist_full_timestep` writes plus `MatrixCellResult`'s cheap
+    aggregate counts instead (the new default -- see this module's
+    docstring for why unconditional full retention is unsafe at real
+    scale).
+
+    `progress_callback`, if given, is called once per simulated day as
+    `progress_callback(cell_key, seed, day)`, right after that day's
+    `persist_full_timestep`. `None` (the default) is a no-op.
+
+    `exercise_llm_path` (default `False`) only matters when `dry_run=True`:
+    when both are `True`, `run_matrix` builds mock OpenRouter/Polygon
+    clients internally (via `tests/llm_test_helpers.py`) for whichever of
+    `openrouter_client`/`polygon_client` the caller didn't already supply,
+    and runs every cell with `use_llm=True` -- see this module's docstring
+    for the full rationale (letting `run_matrix`'s own test suite exercise
+    the LLM-decision + LLM-decision-persistence path end-to-end).
 
     `dry_run=False` requires both `openrouter_client` and `polygon_client`
     to be supplied explicitly (raises `ValueError` otherwise); see this
@@ -380,6 +479,26 @@ def run_matrix(
     if matrix_run_id is None:
         matrix_run_id = generate_id("matrix")
 
+    if dry_run and exercise_llm_path:
+        from tests.llm_test_helpers import mock_openrouter_client, mock_polygon_client
+
+        if openrouter_client is None:
+            openrouter_client = mock_openrouter_client(
+                {
+                    model_id: {
+                        "action": "ACCEPT",
+                        "proposed_currency": "USDC",
+                        "proposed_chain": "ethereum",
+                        "amount": 1.0,
+                        "price": 1.0,
+                        "reasoning": "exercise_llm_path canned response",
+                    }
+                    for model_id in model_candidates
+                }
+            )
+        if polygon_client is None:
+            polygon_client = mock_polygon_client({})
+
     available_models = _resolve_available_models(model_candidates, None if dry_run else openrouter_client)
     use_llm = openrouter_client is not None
 
@@ -399,6 +518,7 @@ def run_matrix(
     }
 
     results: list[MatrixCellResult] = []
+    failures: list[tuple[str, int, Exception]] = []
 
     for spec in _build_cell_specs():
         config_hash = compute_config_hash(_config_paths_for(spec))
@@ -418,6 +538,13 @@ def run_matrix(
 
             run_id = f"{matrix_run_id}-{spec.key}-seed{seed}"
 
+            # Deliberately OUTSIDE the try/except below: a colliding run_id
+            # (see `matrix_run_id`'s docstring -- reusing the same explicit
+            # matrix_run_id against the same database is an intentional
+            # "resume under this exact id" request) must still raise
+            # IntegrityError to the caller immediately, not be swallowed
+            # into `failures` as if it were an ordinary per-cell/seed
+            # simulation failure.
             SimulationRunRepository(session).record(
                 SimulationRunLogEntry(
                     run_id=run_id,
@@ -432,29 +559,55 @@ def run_matrix(
             )
             session.commit()
 
-            rng = random.Random(seed)
-            daily_results: list[TimestepResult] = []
-            for day in range(num_days):
-                result = run_timestep(
-                    env,
-                    day=day,
-                    rng=rng,
-                    use_llm=use_llm,
-                    openrouter_client=openrouter_client,
-                    polygon_client=polygon_client,
-                )
-                persist_full_timestep(session, env, result, run_id=run_id)
-                daily_results.append(result)
+            # Everything from here on is this cell/seed's actual simulated
+            # day loop -- the part that scales with `num_days` and can fail
+            # partway through a long real run. A failure here aborts only
+            # this cell/seed's remaining days (day-to-day state within a
+            # cell is sequential/stateful, so there's no meaningful way to
+            # resume mid-cell) and is recorded in `failures` rather than
+            # aborting every other cell/seed in the matrix.
+            try:
+                rng = random.Random(seed)
+                daily_results: list[TimestepResult] = []
+                num_days_completed = 0
+                total_transactions = 0
+                total_llm_decisions = 0
+                for day in range(num_days):
+                    result = run_timestep(
+                        env,
+                        day=day,
+                        rng=rng,
+                        use_llm=use_llm,
+                        openrouter_client=openrouter_client,
+                        polygon_client=polygon_client,
+                    )
+                    persist_full_timestep(session, env, result, run_id=run_id)
+                    if progress_callback is not None:
+                        progress_callback(spec.key, seed, day)
+                    num_days_completed += 1
+                    total_transactions += len(result.transactions)
+                    total_llm_decisions += len(result.llm_decisions)
+                    if keep_daily_results:
+                        daily_results.append(result)
 
-            results.append(
-                MatrixCellResult(
-                    run_id=run_id,
-                    cell_key=spec.key,
-                    seed=seed,
-                    is_cross_border=spec.cross_border,
-                    num_currencies=len(env.currencies),
-                    daily_results=daily_results,
+                results.append(
+                    MatrixCellResult(
+                        run_id=run_id,
+                        cell_key=spec.key,
+                        seed=seed,
+                        is_cross_border=spec.cross_border,
+                        num_currencies=len(env.currencies),
+                        num_days_completed=num_days_completed,
+                        total_transactions=total_transactions,
+                        total_llm_decisions=total_llm_decisions,
+                        daily_results=daily_results,
+                    )
                 )
-            )
+            except Exception as exc:  # noqa: BLE001 -- deliberately broad: one cell/seed's
+                # failure must never abort the rest of the matrix (see this module's
+                # docstring's "Memory, progress, and per-cell error recovery" section).
+                session.rollback()
+                failures.append((spec.key, seed, exc))
+                continue
 
-    return results
+    return results, failures

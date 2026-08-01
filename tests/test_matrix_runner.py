@@ -14,6 +14,13 @@ Kept fast: tiny `num_days` (1-2), a single fake model candidate, and the
 smallest population Plan 3 defines (`generate_agent_population` always
 builds the fixed 100-agent roster -- there is no smaller-population knob --
 so "fast" here means few days/cells, not few agents).
+
+`run_matrix` returns `(results, failures)` (a 2-tuple) -- every call site
+below unpacks both, and asserts `failures == []` unless the test is
+specifically about the per-cell/seed error-recovery fix. Tests that need
+`MatrixCellResult.daily_results` populated (the pre-fix, full-retention
+default) now pass `keep_daily_results=True` explicitly, since
+`keep_daily_results=False` is the new default.
 """
 
 import pytest
@@ -21,7 +28,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from database.models import AgentRecord, Base, SimulationRunRecord, TimestepLogRecord, TransactionRecord
+from database.models import (
+    AgentRecord,
+    Base,
+    LLMDecisionRecord,
+    SimulationRunRecord,
+    TimestepLogRecord,
+    TransactionRecord,
+)
 from src.agents.population import generate_agent_population
 from src.currencies.currency import load_currency_universe
 from src.currencies.exchange_rates import ExchangeRateTable
@@ -47,16 +61,18 @@ def _by_cell_key(results, cell_key: str, seed: int = 0):
 
 
 def test_run_matrix_with_dry_run_true_does_not_require_real_clients():
-    results = run_matrix(
+    results, failures = run_matrix(
         model_candidates=MODEL_CANDIDATES, seeds=[0], num_days=1, dry_run=True, session=_session()
     )
     assert len(results) == 13  # 1 master + 6 domestic + 6 cross-border, 1 seed
+    assert failures == []
 
 
 def test_run_matrix_produces_13_cells_per_seed():
-    results = run_matrix(
+    results, failures = run_matrix(
         model_candidates=MODEL_CANDIDATES, seeds=[0, 1], num_days=1, dry_run=True, session=_session()
     )
+    assert failures == []
     assert len(results) == 26  # 13 cells x 2 seeds
     cell_keys = {r.cell_key for r in results}
     assert len(cell_keys) == 13
@@ -85,18 +101,20 @@ def test_run_matrix_refuses_dry_run_false_with_only_one_real_client(monkeypatch)
 
 
 def test_master_cell_uses_the_full_nine_currency_universe():
-    results = run_matrix(
+    results, failures = run_matrix(
         model_candidates=MODEL_CANDIDATES, seeds=[0], num_days=1, dry_run=True, session=_session()
     )
+    assert failures == []
     master = _by_cell_key(results, "master")
     assert master.num_currencies == 9
     assert not master.is_cross_border
 
 
 def test_sandbox_cells_use_exactly_two_currencies_domestic_and_cross_border():
-    results = run_matrix(
+    results, failures = run_matrix(
         model_candidates=MODEL_CANDIDATES, seeds=[0], num_days=1, dry_run=True, session=_session()
     )
+    assert failures == []
     domestic = _by_cell_key(results, "liquidity_vs_governance_domestic")
     cross_border = _by_cell_key(results, "liquidity_vs_governance_cross_border")
 
@@ -107,9 +125,10 @@ def test_sandbox_cells_use_exactly_two_currencies_domestic_and_cross_border():
 
 
 def test_every_sandbox_gets_a_domestic_and_a_cross_border_cell():
-    results = run_matrix(
+    results, failures = run_matrix(
         model_candidates=MODEL_CANDIDATES, seeds=[0], num_days=1, dry_run=True, session=_session()
     )
+    assert failures == []
     cell_keys = {r.cell_key for r in results}
     expected_sandboxes = {
         "liquidity_vs_governance",
@@ -138,9 +157,15 @@ def test_cross_border_cells_only_settle_transactions_between_zone_mismatched_age
     population = generate_agent_population(seed, MODEL_CANDIDATES)
     zone_by_id = {agent.agent_id: agent.currency_zone for agent in population}
 
-    results = run_matrix(
-        model_candidates=MODEL_CANDIDATES, seeds=[seed], num_days=2, dry_run=True, session=_session()
+    results, failures = run_matrix(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[seed],
+        num_days=2,
+        dry_run=True,
+        session=_session(),
+        keep_daily_results=True,
     )
+    assert failures == []
     cross_border = _by_cell_key(results, "liquidity_vs_governance_cross_border", seed=seed)
 
     all_transactions = [tx for day in cross_border.daily_results for tx in day.transactions]
@@ -161,9 +186,15 @@ def test_domestic_cells_are_not_forced_cross_zone():
     population = generate_agent_population(seed, MODEL_CANDIDATES)
     zone_by_id = {agent.agent_id: agent.currency_zone for agent in population}
 
-    results = run_matrix(
-        model_candidates=MODEL_CANDIDATES, seeds=[seed], num_days=2, dry_run=True, session=_session()
+    results, failures = run_matrix(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[seed],
+        num_days=2,
+        dry_run=True,
+        session=_session(),
+        keep_daily_results=True,
     )
+    assert failures == []
     domestic = _by_cell_key(results, "liquidity_vs_governance_domestic", seed=seed)
 
     all_transactions = [tx for day in domestic.daily_results for tx in day.transactions]
@@ -174,9 +205,10 @@ def test_domestic_cells_are_not_forced_cross_zone():
 
 def test_run_matrix_persists_provenance_agent_and_transaction_rows():
     session = _session()
-    results = run_matrix(
+    results, failures = run_matrix(
         model_candidates=MODEL_CANDIDATES, seeds=[0], num_days=1, dry_run=True, session=session
     )
+    assert failures == []
 
     run_rows = session.query(SimulationRunRecord).all()
     assert len(run_rows) == 13
@@ -193,7 +225,12 @@ def test_run_matrix_persists_provenance_agent_and_transaction_rows():
     assert session.query(AgentRecord).count() <= 100
     assert session.query(AgentRecord).count() > 0
 
-    total_transactions_returned = sum(len(day.transactions) for r in results for day in r.daily_results)
+    # `total_transactions` is a cheap per-cell aggregate populated
+    # regardless of `keep_daily_results` (default False here, so
+    # `daily_results` itself stays empty -- see the two dedicated
+    # keep_daily_results tests below for that behavior).
+    assert all(r.daily_results == [] for r in results)
+    total_transactions_returned = sum(r.total_transactions for r in results)
     assert session.query(TransactionRecord).count() == total_transactions_returned
 
 
@@ -211,15 +248,17 @@ def test_run_matrix_works_with_a_supplied_mock_openrouter_client_under_dry_run()
         "reasoning": "test reasoning",
     }})
 
-    results = run_matrix(
+    results, failures = run_matrix(
         model_candidates=MODEL_CANDIDATES,
         seeds=[0],
         num_days=1,
         dry_run=True,
         openrouter_client=client,
         session=_session(),
+        keep_daily_results=True,
     )
 
+    assert failures == []
     assert len(results) == 13
     master = _by_cell_key(results, "master")
     assert master.daily_results[0].llm_decisions  # LLM path actually ran
@@ -284,9 +323,15 @@ def test_run_matrix_can_be_called_twice_against_the_same_database_without_collid
     `IntegrityError`."""
     session = _session()
 
-    first = run_matrix(model_candidates=MODEL_CANDIDATES, seeds=[0], num_days=1, dry_run=True, session=session)
-    second = run_matrix(model_candidates=MODEL_CANDIDATES, seeds=[0], num_days=1, dry_run=True, session=session)
+    first, first_failures = run_matrix(
+        model_candidates=MODEL_CANDIDATES, seeds=[0], num_days=1, dry_run=True, session=session
+    )
+    second, second_failures = run_matrix(
+        model_candidates=MODEL_CANDIDATES, seeds=[0], num_days=1, dry_run=True, session=session
+    )
 
+    assert first_failures == []
+    assert second_failures == []
     assert len(first) == 13
     assert len(second) == 13
     first_run_ids = {r.run_id for r in first}
@@ -373,3 +418,135 @@ def test_run_matrix_with_the_same_explicit_matrix_run_id_twice_does_collide():
             session=session,
             matrix_run_id="fixed-run-id",
         )
+
+
+# --- Regression tests for the memory/progress/error-recovery fix ----------
+
+
+def test_keep_daily_results_false_default_does_not_retain_full_results_but_still_persists():
+    """`keep_daily_results=False` (the new default) must not hold onto full
+    day-by-day `TimestepResult`s in memory, but the run must still complete
+    normally and persist every day's data -- checked via DB row counts, not
+    in-memory result completeness."""
+    session = _session()
+    results, failures = run_matrix(
+        model_candidates=MODEL_CANDIDATES, seeds=[0], num_days=2, dry_run=True, session=session
+    )
+
+    assert failures == []
+    assert len(results) == 13
+    assert all(r.daily_results == [] for r in results)
+    assert all(r.num_days_completed == 2 for r in results)
+
+    assert session.query(TimestepLogRecord).count() == 13 * 2
+    total_transactions_returned = sum(r.total_transactions for r in results)
+    assert session.query(TransactionRecord).count() == total_transactions_returned
+
+
+def test_keep_daily_results_true_preserves_full_retention_behavior():
+    """`keep_daily_results=True` is the opt-in escape hatch that restores the
+    original, pre-fix full-retention behavior: every simulated day's full
+    `TimestepResult` stays in `MatrixCellResult.daily_results`."""
+    results, failures = run_matrix(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[0],
+        num_days=2,
+        dry_run=True,
+        session=_session(),
+        keep_daily_results=True,
+    )
+
+    assert failures == []
+    assert len(results) == 13
+    for r in results:
+        assert r.num_days_completed == 2
+        assert len(r.daily_results) == 2
+        assert [day_result.day for day_result in r.daily_results] == [0, 1]
+
+
+def test_progress_callback_is_called_once_per_cell_seed_day():
+    calls: list[tuple[str, int, int]] = []
+
+    def progress_callback(cell_key: str, seed: int, day: int) -> None:
+        calls.append((cell_key, seed, day))
+
+    results, failures = run_matrix(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[0, 1],
+        num_days=2,
+        dry_run=True,
+        session=_session(),
+        progress_callback=progress_callback,
+    )
+
+    assert failures == []
+    assert len(results) == 26  # 13 cells x 2 seeds
+    assert len(calls) == 13 * 2 * 2  # cells x seeds x days
+
+    cell_keys = {r.cell_key for r in results}
+    for cell_key in cell_keys:
+        for seed in (0, 1):
+            for day in (0, 1):
+                assert (cell_key, seed, day) in calls
+
+
+def test_run_matrix_records_a_failed_cell_seed_and_still_completes_the_rest(monkeypatch):
+    """A single cell/seed's exception (injected here via monkeypatch on
+    `run_timestep`) must abort only that cell/seed's remaining days, not the
+    whole matrix -- every other cell/seed must still complete, and the
+    failure must show up in the returned `failures` list."""
+    import src.simulation.matrix_runner as matrix_runner_module
+
+    original_run_timestep = matrix_runner_module.run_timestep
+    call_count = {"n": 0}
+
+    def flaky_run_timestep(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("injected failure for testing")
+        return original_run_timestep(*args, **kwargs)
+
+    monkeypatch.setattr(matrix_runner_module, "run_timestep", flaky_run_timestep)
+
+    results, failures = run_matrix(
+        model_candidates=MODEL_CANDIDATES, seeds=[0], num_days=1, dry_run=True, session=_session()
+    )
+
+    # _build_cell_specs() yields "master" first, so the first (and, per
+    # call_count, only) injected failure lands on the master cell.
+    assert len(failures) == 1
+    failed_cell_key, failed_seed, exc = failures[0]
+    assert failed_cell_key == "master"
+    assert failed_seed == 0
+    assert isinstance(exc, RuntimeError)
+
+    # The other 12 cells for this seed still ran to completion.
+    assert len(results) == 12
+    assert "master" not in {r.cell_key for r in results}
+
+
+# --- Regression test for exercising the LLM path under dry_run ------------
+
+
+def test_exercise_llm_path_under_dry_run_persists_llm_decisions_without_real_network():
+    """`exercise_llm_path=True` (with `dry_run=True`) must make `run_matrix`
+    build mock OpenRouter/Polygon clients internally and run every cell with
+    `use_llm=True`, so `run_matrix`'s own test suite genuinely exercises the
+    LLM-decision + LLM-decision-persistence path -- not just lower-level
+    unit tests of `persist_full_timestep` in isolation. No real network call
+    happens: both clients are `httpx.MockTransport`-backed fakes built by
+    `tests/llm_test_helpers.py`, and this test sandbox has no real network
+    access, so a real call would raise rather than silently succeed."""
+    session = _session()
+    results, failures = run_matrix(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[0],
+        num_days=1,
+        dry_run=True,
+        exercise_llm_path=True,
+        session=session,
+    )
+
+    assert failures == []
+    assert len(results) == 13
+    assert session.query(LLMDecisionRecord).count() > 0
