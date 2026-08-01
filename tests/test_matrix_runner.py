@@ -536,7 +536,27 @@ def test_exercise_llm_path_under_dry_run_persists_llm_decisions_without_real_net
     unit tests of `persist_full_timestep` in isolation. No real network call
     happens: both clients are `httpx.MockTransport`-backed fakes built by
     `tests/llm_test_helpers.py`, and this test sandbox has no real network
-    access, so a real call would raise rather than silently succeed."""
+    access, so a real call would raise rather than silently succeed.
+
+    A prior version of this test only asserted an aggregate
+    `LLMDecisionRecord.count() > 0` across all 13 cells -- a check that would
+    still pass even if every decision failed `adapt_decision`'s
+    currency-validity check and produced a synthetic `WALK_AWAY` (this
+    actually happened: the mock's canned `proposed_currency` was a hardcoded
+    "USDC", which only the master cell's real 9-currency universe supports;
+    all 12 sandbox cells use synthetic 2-currency `SBX*` universes that never
+    include "USDC", so every one of their decisions failed validation and
+    only the master cell's decisions ever reached ACCEPT). Fixed both here
+    (per cell/seed, not in aggregate) and in `run_matrix` (the mock's
+    proposed currency is now built per cell from that cell's own supported
+    symbols -- see `src/simulation/matrix_runner.py`'s docstring). This test
+    now asserts, for every one of the 13 cells, that at least one
+    `LLMDecisionRecord` row for that cell's own `run_id` actually reached
+    `action == "ACCEPT"` and that cell produced at least one settled
+    transaction -- so a regression back to a cell-invalid hardcoded currency
+    (or any other change that silently breaks a subset of cells) cannot pass
+    this test merely because SOME cell (e.g. just the master cell) still
+    succeeds."""
     session = _session()
     results, failures = run_matrix(
         model_candidates=MODEL_CANDIDATES,
@@ -550,3 +570,25 @@ def test_exercise_llm_path_under_dry_run_persists_llm_decisions_without_real_net
     assert failures == []
     assert len(results) == 13
     assert session.query(LLMDecisionRecord).count() > 0
+
+    cell_keys = {r.cell_key for r in results}
+    assert cell_keys == {"master"} | {
+        f"{name}_{suffix}" for name in SANDBOX_CURRENCY_PAIRS for suffix in ("domestic", "cross_border")
+    }
+
+    for result in results:
+        # Each cell's decisions are scoped by its own run_id (LLMDecisionRecord
+        # .simulation_id == run_id, per persist_full_timestep), so this proves
+        # the accept/settle path was exercised in THIS cell specifically, not
+        # merely somewhere in the aggregate.
+        cell_decisions = (
+            session.query(LLMDecisionRecord).filter(LLMDecisionRecord.simulation_id == result.run_id).all()
+        )
+        assert cell_decisions, f"cell {result.cell_key!r} (run_id={result.run_id!r}) has no LLM decisions at all"
+        assert any(row.action == "ACCEPT" for row in cell_decisions), (
+            f"cell {result.cell_key!r} (run_id={result.run_id!r}) never reached action == 'ACCEPT' -- "
+            f"actions seen: {sorted({row.action for row in cell_decisions})}"
+        )
+        assert result.total_transactions > 0, (
+            f"cell {result.cell_key!r} (run_id={result.run_id!r}) settled zero transactions"
+        )

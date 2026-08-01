@@ -128,6 +128,29 @@ explicitly opts in; the default (`exercise_llm_path=False`) path never
 touches `tests/` and behaves exactly as before. Every existing caller/test
 that doesn't pass `exercise_llm_path=True` sees zero behavior change.
 
+A review fix to the above: the canned mock decision's `proposed_currency`
+must be a symbol `adapt_decision` will actually accept for THIS cell --
+`supported_currencies` there is narrowed to exactly the candidates
+`generate_candidates` offered that round (see `src/simulation/timestep.py`
+~line 535), which for the 12 sandbox cells is always one of that
+sandbox's own two synthetic `SBX*` symbols (`src/currencies
+.sandbox_currencies.py`), never a real-universe symbol. A single mock
+client shared across all 13 cells therefore cannot use one hardcoded
+symbol for every cell -- "USDC" (the real universe's symbol, valid for
+the master cell only, since every `configs/agent_profiles/*.yaml`
+profile's `initial_wallet` holds it) would be rejected as
+"Unsupported currency" in all 12 sandbox cells, producing a synthetic
+`WALK_AWAY` there instead of a genuine `ACCEPT`. Fixed by building a
+*per-cell* mock OpenRouter client (still only when the caller didn't
+supply their own) whose canned `proposed_currency` is `"USDC"` for the
+master cell but `next(iter(spec.currencies))` -- one of that sandbox's
+own two symbols, guaranteed held by every agent post-`_seed_sandbox_
+wallets` -- for each of the 12 sandbox cells. `mock_polygon_client`,
+whose canned responses are currency-ticker-keyed but degrade to an empty
+`{"results": []}` for any ticker with no entry regardless of which cell
+is running, has no such per-cell dependency and is still built once for
+the whole matrix run.
+
 Model-candidate verification (`src.llm.llm_router.verify_model_candidates`)
 is called at most ONCE per `run_matrix` call -- not once per cell/seed --
 and only when `dry_run=False` (the only case that guarantees a real
@@ -432,7 +455,13 @@ def run_matrix(
     `openrouter_client`/`polygon_client` the caller didn't already supply,
     and runs every cell with `use_llm=True` -- see this module's docstring
     for the full rationale (letting `run_matrix`'s own test suite exercise
-    the LLM-decision + LLM-decision-persistence path end-to-end).
+    the LLM-decision + LLM-decision-persistence path end-to-end). The mock
+    OpenRouter client is built freshly PER CELL (not once for the whole
+    matrix), since its canned response's `proposed_currency` must be a
+    symbol that cell's own currency universe actually supports -- see this
+    module's docstring's review-fix paragraph for why a single shared mock
+    response cannot satisfy both the master cell and the 12 sandbox cells
+    at once.
 
     `dry_run=False` requires both `openrouter_client` and `polygon_client`
     to be supplied explicitly (raises `ValueError` otherwise); see this
@@ -479,28 +508,22 @@ def run_matrix(
     if matrix_run_id is None:
         matrix_run_id = generate_id("matrix")
 
-    if dry_run and exercise_llm_path:
-        from tests.llm_test_helpers import mock_openrouter_client, mock_polygon_client
+    # Caller-supplied clients are always respected as-is (captured here,
+    # before exercise_llm_path's auto-construction below, so that intent is
+    # never lost). `mock_openrouter_client` is deliberately NOT built here
+    # for the whole matrix -- unlike `mock_polygon_client`, its canned
+    # response's `proposed_currency` must be valid for whichever cell is
+    # currently running (the master cell's real universe vs. each sandbox's
+    # own synthetic pair), so it's built fresh per cell inside the loop
+    # below instead. See this module's docstring's review-fix paragraph.
+    caller_supplied_openrouter_client = openrouter_client
+    if dry_run and exercise_llm_path and polygon_client is None:
+        from tests.llm_test_helpers import mock_polygon_client
 
-        if openrouter_client is None:
-            openrouter_client = mock_openrouter_client(
-                {
-                    model_id: {
-                        "action": "ACCEPT",
-                        "proposed_currency": "USDC",
-                        "proposed_chain": "ethereum",
-                        "amount": 1.0,
-                        "price": 1.0,
-                        "reasoning": "exercise_llm_path canned response",
-                    }
-                    for model_id in model_candidates
-                }
-            )
-        if polygon_client is None:
-            polygon_client = mock_polygon_client({})
+        polygon_client = mock_polygon_client({})
 
     available_models = _resolve_available_models(model_candidates, None if dry_run else openrouter_client)
-    use_llm = openrouter_client is not None
+    use_llm = caller_supplied_openrouter_client is not None or (dry_run and exercise_llm_path)
 
     git_commit_hash = compute_git_commit_hash()
     prompt_version_hash = _prompt_version_hash()
@@ -523,6 +546,34 @@ def run_matrix(
     for spec in _build_cell_specs():
         config_hash = compute_config_hash(_config_paths_for(spec))
         cell_scenario = base_scenario if spec.sandbox_key is None else sandbox_scenarios[spec.sandbox_key]
+
+        # exercise_llm_path's mock OpenRouter client, built fresh per cell so
+        # its canned proposed_currency is one this cell's currency universe
+        # actually supports -- "USDC" for the master cell (every agent
+        # profile's initial_wallet holds it, confirmed against every
+        # configs/agent_profiles/*.yaml file), or one of the sandbox's own
+        # two symbols (guaranteed held by every agent post-
+        # `_seed_sandbox_wallets`) for each of the 12 sandbox cells. A
+        # caller-supplied openrouter_client is always used as-is instead, for
+        # every cell -- see this module's docstring's review-fix paragraph.
+        cell_openrouter_client = caller_supplied_openrouter_client
+        if cell_openrouter_client is None and dry_run and exercise_llm_path:
+            from tests.llm_test_helpers import mock_openrouter_client
+
+            cell_mock_currency = "USDC" if spec.currencies is None else next(iter(spec.currencies))
+            cell_openrouter_client = mock_openrouter_client(
+                {
+                    model_id: {
+                        "action": "ACCEPT",
+                        "proposed_currency": cell_mock_currency,
+                        "proposed_chain": "ethereum",
+                        "amount": 1.0,
+                        "price": 1.0,
+                        "reasoning": "exercise_llm_path canned response",
+                    }
+                    for model_id in model_candidates
+                }
+            )
 
         for seed in seeds:
             population = generate_agent_population(seed, available_models)
@@ -578,7 +629,7 @@ def run_matrix(
                         day=day,
                         rng=rng,
                         use_llm=use_llm,
-                        openrouter_client=openrouter_client,
+                        openrouter_client=cell_openrouter_client,
                         polygon_client=polygon_client,
                     )
                     persist_full_timestep(session, env, result, run_id=run_id)
