@@ -34,12 +34,12 @@ class WandbRunLogger:
     def on_timestep(self, env: Environment, result: TimestepResult) -> None:
         self._wandb.log(
             {
-                "market_share": market_share(env.ledger),
+                "market_share": market_share(env.ledger, env.exchange_rates),
                 "chain_usage_share": chain_usage_share(env.ledger),
                 "transaction_success_rate": transaction_success_rate(env.ledger),
                 "avg_gas_fee_paid": average_gas_fee_paid(env.ledger),
-                "governance_preference": governance_preference(env.ledger, env.currencies),
-                "compliance_adoption_share": compliance_adoption_share(env.ledger, env.currencies),
+                "governance_preference": governance_preference(env.ledger, env.currencies, env.exchange_rates),
+                "compliance_adoption_share": compliance_adoption_share(env.ledger, env.currencies, env.exchange_rates),
                 "liquidity_sensitivity": liquidity_sensitivity(env.ledger, env.currencies),
                 "negotiation_length": negotiation_length(result.negotiations),
                 "wealth_distribution": wealth_distribution_from_agents(env.agents, env.exchange_rates),
