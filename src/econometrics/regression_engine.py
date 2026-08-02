@@ -61,7 +61,12 @@ def fit_clustered_logit(
     result = model.fit(cov_type="cluster", cov_kwds={"groups": df[cluster_col]}, disp=0)
 
     ci = result.conf_int().loc[regressor_col]
-    adjusted_pseudo_r2 = 1.0 - (result.llf - result.df_model) / result.llnull
+    # McFadden's adjusted R^2 uses K = total estimated parameters INCLUDING
+    # the intercept; statsmodels' result.df_model excludes it (it's the
+    # regressor count only), so +1 corrects for the constant sm.add_constant
+    # adds above.
+    num_params_including_intercept = result.df_model + 1
+    adjusted_pseudo_r2 = 1.0 - (result.llf - num_params_including_intercept) / result.llnull
 
     return RegressionResult(
         hypothesis=hypothesis,
