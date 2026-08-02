@@ -37,7 +37,7 @@ from src.agents.buyer_agent import BuyerAgent
 from src.agents.seller_agent import SellerAgent
 from src.agents.wealth import advance_price_index
 from src.blockchain.routing_engine import generate_candidates
-from src.economy.fx_tax import compute_counterparty_zone_tax, compute_fx_tax, load_fx_params
+from src.economy.fx_tax import compute_fx_tax, load_fx_params
 from src.economy.shocks import ShockEvent, ShockType, apply_currency_shock, apply_shock
 from src.llm.decision_adapter import DecisionValidationError, NegotiationAction, adapt_decision
 from src.llm.decision_schema import Decision, DecisionAction
@@ -670,19 +670,8 @@ def run_timestep(
                 # tx.currency_symbol native units, so fx_tax_paid has to be a
                 # percentage of the same native-unit paid_value, not of the
                 # pre-conversion USD number.
-                #
-                # Matrix-runner cross-border-friction fix: additive with a
-                # second, counterparty-zone-based tax (compute_counterparty_
-                # zone_tax) that fires whenever buyer and seller are in
-                # different currency_zones, regardless of which currency
-                # settles the trade -- see src/economy/fx_tax.py's module
-                # docstring for why compute_fx_tax alone adds no friction
-                # beyond what a same-currency-zone-mismatched buyer already
-                # pays in a domestic cell.
                 tx.fx_tax_paid = compute_fx_tax(
                     tx.paid_value, env.currencies[tx.currency_symbol], buyer.currency_zone, fx_params.fx_tax_rate
-                ) + compute_counterparty_zone_tax(
-                    tx.paid_value, buyer.currency_zone, seller.currency_zone, fx_params.fx_tax_rate
                 )
 
                 # Step 10: validate.
@@ -741,14 +730,8 @@ def run_timestep(
                 # paths apply identical FX-tax semantics before settlement.
                 # Must run AFTER the USD->native-unit conversion above, for
                 # the same unit-consistency reason given in the LLM path.
-                #
-                # Matrix-runner cross-border-friction fix: additive with
-                # compute_counterparty_zone_tax (see the LLM-path comment
-                # above and src/economy/fx_tax.py's module docstring).
                 fx_tax_paid = compute_fx_tax(
                     native_paid_value, env.currencies[chosen.currency_symbol], buyer.currency_zone, fx_params.fx_tax_rate
-                ) + compute_counterparty_zone_tax(
-                    native_paid_value, buyer.currency_zone, seller.currency_zone, fx_params.fx_tax_rate
                 )
 
                 tx = Transaction(

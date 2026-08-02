@@ -10,18 +10,15 @@ Follows Plan 2's trust.py/trust_params.yaml loader pattern exactly (see
 src/economy/trust.py) so config-driven economic parameters stay consistent
 across the codebase.
 
-`compute_counterparty_zone_tax` (matrix runner cross-border-friction fix):
-`compute_fx_tax` above only ever compares the SETTLEMENT CURRENCY's zone
-against the buyer's zone -- it has no notion of which zone the SELLER is in.
-That means the 6 cross-border matrix-runner cells (which force a
-zone-mismatched buyer/seller pairing via `CrossZoneMarketplace`) add no
-economic friction beyond what a same-currency-zone-mismatched buyer already
-pays in a domestic cell: nothing in `compute_fx_tax` reacts to the
-counterparty's zone at all. This function is a second, additive friction
-that fires purely off the buyer/seller zone mismatch -- regardless of which
-currency ends up settling the trade (even a zone-neutral gold-backed
-currency) -- reusing the same `fx_tax_rate` from `configs/economy/fx_params.yaml`
-rather than inventing a second rate.
+Deliberately does NOT add a second, counterparty-zone-based tax on top of
+this (an earlier revision briefly did, then removed it on review): a
+real-world stablecoin/gold-token settlement is valued specifically because
+using a shared or zone-neutral settlement currency avoids cross-border
+friction regardless of where either counterparty is based -- taxing the
+mere fact of a cross-zone counterparty, even when the settlement currency
+itself is zone-neutral, would model stablecoin rails as no better than
+traditional cross-border FX, which contradicts the premise this simulation
+is testing.
 """
 
 from pathlib import Path
@@ -54,23 +51,5 @@ def currency_zone_of(currency: CurrencyConfig) -> str | None:
 def compute_fx_tax(paid_value: float, currency: CurrencyConfig, buyer_zone: str | None, fx_tax_rate: float) -> float:
     currency_zone = currency_zone_of(currency)
     if currency_zone is None or buyer_zone is None or currency_zone == buyer_zone:
-        return 0.0
-    return paid_value * fx_tax_rate
-
-
-def compute_counterparty_zone_tax(
-    paid_value: float, buyer_zone: str | None, seller_zone: str | None, fx_tax_rate: float
-) -> float:
-    """Additional friction for a zone-mismatched buyer/seller pair, on top of
-    (additive with) `compute_fx_tax`'s settlement-currency-zone check. Fires
-    regardless of which currency actually settles the trade -- unlike
-    `compute_fx_tax`, a zone-neutral gold-backed settlement currency does not
-    exempt a cross-zone counterparty pairing from this tax, since the
-    friction being modeled here is the cross-border COUNTERPARTY
-    relationship itself, not the settlement currency's own zone. Zero when
-    either side has no assigned zone (e.g. legacy count-based agents) or
-    both sides share the same zone.
-    """
-    if buyer_zone is None or seller_zone is None or buyer_zone == seller_zone:
         return 0.0
     return paid_value * fx_tax_rate
