@@ -461,6 +461,40 @@ def test_run_timestep_llm_decision_record_carries_the_actual_rendered_prompt_not
         assert record.rendered_prompt in captured_prompts
 
 
+def test_llm_decision_record_has_optional_spread_and_gas_optimal_fields():
+    from src.simulation.timestep import LLMDecisionRecord
+
+    decision = LLMDecisionRecord(
+        agent_id="a1",
+        agent_type="consumer",
+        risk_profile="medium",
+        utility_type="cara",
+        requested_model="vendor/model",
+        actual_model="vendor/model",
+        success=True,
+    )
+    assert decision.spread_optimal_currency is None
+    assert decision.spread_optimal_chain is None
+    assert decision.gas_optimal_currency is None
+    assert decision.gas_optimal_chain is None
+
+    decision_with_optima = LLMDecisionRecord(
+        agent_id="a1",
+        agent_type="consumer",
+        risk_profile="medium",
+        utility_type="cara",
+        requested_model="vendor/model",
+        actual_model="vendor/model",
+        success=True,
+        spread_optimal_currency="USDC",
+        spread_optimal_chain="solana",
+        gas_optimal_currency="USDT",
+        gas_optimal_chain="base",
+    )
+    assert decision_with_optima.spread_optimal_currency == "USDC"
+    assert decision_with_optima.gas_optimal_chain == "base"
+
+
 def test_run_timestep_with_use_llm_true_and_total_model_failure_skips_transactions_gracefully():
     env = Environment.build("baseline", {"consumer": 2, "merchant": 2})
     _assign_models(env, "test-vendor/buyer-model", "test-vendor/seller-model")
@@ -939,6 +973,10 @@ def test_negotiation_conversation_history_includes_both_sides_offers_by_round_th
         90.0,
         decision_log,
         buyer_wallet_balances=dict(buyer.wallet.balances),
+        spread_optimal_currency="USDC",
+        spread_optimal_chain="ethereum",
+        gas_optimal_currency="USDC",
+        gas_optimal_chain="ethereum",
     )
     seller_decide = _make_llm_decide_closure(
         seller,
@@ -951,6 +989,10 @@ def test_negotiation_conversation_history_includes_both_sides_offers_by_round_th
         90.0,
         decision_log,
         buyer_wallet_balances=dict(buyer.wallet.balances),
+        spread_optimal_currency="USDC",
+        spread_optimal_chain="ethereum",
+        gas_optimal_currency="USDC",
+        gas_optimal_chain="ethereum",
     )
 
     session = run_llm_negotiation(buyer.agent_id, seller.agent_id, buyer_decide, seller_decide, max_rounds=4)

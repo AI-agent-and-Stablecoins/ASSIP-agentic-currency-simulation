@@ -225,6 +225,34 @@ def test_llm_decision_log_entry_hashes_rendered_prompt_not_reasoning():
     assert entry.system_prompt == decision.rendered_prompt
 
 
+def test_llm_decision_log_entry_carries_spread_and_gas_optimal_fields():
+    decision = TimestepLLMDecisionRecord(
+        agent_id="a1",
+        agent_type="consumer",
+        risk_profile="medium",
+        utility_type="cara",
+        requested_model="vendor/model",
+        actual_model="vendor/model",
+        success=True,
+        action="ACCEPT",
+        currency_symbol="USDC",
+        chain_name="solana",
+        amount=1.0,
+        price=100.0,
+        spread_optimal_currency="USDT",
+        spread_optimal_chain="ethereum",
+        gas_optimal_currency="USDC",
+        gas_optimal_chain="solana",
+    )
+
+    entry = _llm_decision_log_entry(decision, "dec-1", "run-1", 0, agent=None, scenario_name="master_simulation")
+
+    assert entry.spread_optimal_currency == "USDT"
+    assert entry.spread_optimal_chain == "ethereum"
+    assert entry.gas_optimal_currency == "USDC"
+    assert entry.gas_optimal_chain == "solana"
+
+
 def test_persist_full_timestep_persists_rendered_prompt_hash_derived_from_the_prompt_not_reasoning():
     """Fix 1 (Critical, Task 11 review), end-to-end: runs a real use_llm=True
     day (fixed `reasoning="test reasoning"` for every decision, per

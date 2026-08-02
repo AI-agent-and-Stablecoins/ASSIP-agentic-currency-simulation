@@ -165,6 +165,16 @@ def run_cell(
                 scenario="experiment_007_governance_prompting",
                 domestic_or_cross_border="cross_border" if context.transaction_context.is_cross_border else "domestic",
                 governance_prompt_enabled=governance_prompt_enabled,
+                # This Phase 2 experiment predates Phase 3 Plan 5's spread/gas
+                # -optimal tracking (added for H2) and does not retain the
+                # candidate list past `_build_context`, so these follow the
+                # same "unavailable -> empty string" convention `currency`/
+                # `chain` already use elsewhere in this same call for data
+                # this context doesn't have.
+                spread_optimal_currency="",
+                spread_optimal_chain="",
+                gas_optimal_currency="",
+                gas_optimal_chain="",
             )
         )
 

@@ -49,6 +49,10 @@ def test_llm_decision_repository_persists_full_record():
         scenario="baseline",
         domestic_or_cross_border="domestic",
         governance_prompt_enabled=True,
+        spread_optimal_currency="USDT",
+        spread_optimal_chain="ethereum",
+        gas_optimal_currency="USDC",
+        gas_optimal_chain="ethereum",
     )
 
     repo.record(entry)

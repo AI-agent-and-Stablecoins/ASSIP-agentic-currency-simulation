@@ -36,7 +36,7 @@ from src.agents.base_agent import BaseAgent
 from src.agents.buyer_agent import BuyerAgent
 from src.agents.seller_agent import SellerAgent
 from src.agents.wealth import advance_price_index
-from src.blockchain.routing_engine import generate_candidates
+from src.blockchain.routing_engine import CurrencyChainOption, generate_candidates
 from src.economy.fx_tax import compute_fx_tax, load_fx_params
 from src.economy.shocks import ShockEvent, ShockType, apply_currency_shock, apply_shock
 from src.llm.decision_adapter import DecisionValidationError, NegotiationAction, adapt_decision
@@ -95,6 +95,10 @@ class LLMDecisionRecord(BaseModel):
     reasoning: str | None = None
     rendered_prompt: str | None = None
     hallucination: HallucinationResult | None = None
+    spread_optimal_currency: str | None = None
+    spread_optimal_chain: str | None = None
+    gas_optimal_currency: str | None = None
+    gas_optimal_chain: str | None = None
 
 
 class TimestepResult(BaseModel):
@@ -217,6 +221,24 @@ def decide_single_model(
             return None
 
 
+def _spread_and_gas_optimal(candidates: list[CurrencyChainOption]) -> tuple[str, str, str, str]:
+    """Identifies which candidate this round was spread-optimal (highest
+    liquidity_score -- the codebase's bid-ask-spread proxy, per Plan 2's
+    design spec) vs. gas-optimal (lowest gas_fee). Used by Plan 5's H2
+    tradeoff-sample design (see docs/superpowers/specs/
+    2026-08-02-phase3-plan5-econometrics-design.md Sec 2) to identify
+    whether a genuine spread-vs-gas tradeoff existed that round.
+    """
+    spread_optimal = max(candidates, key=lambda c: c.liquidity_score)
+    gas_optimal = min(candidates, key=lambda c: c.gas_fee)
+    return (
+        spread_optimal.currency_symbol,
+        spread_optimal.chain_name,
+        gas_optimal.currency_symbol,
+        gas_optimal.chain_name,
+    )
+
+
 def _make_llm_decide_closure(
     agent: BaseAgent,
     agent_class: str,
@@ -228,6 +250,10 @@ def _make_llm_decide_closure(
     listing_true_price: float,
     decision_log: list[LLMDecisionRecord],
     buyer_wallet_balances: dict[str, float],
+    spread_optimal_currency: str,
+    spread_optimal_chain: str,
+    gas_optimal_currency: str,
+    gas_optimal_chain: str,
 ) -> Callable[[NegotiationSession], NegotiationAction]:
     """Builds one side's `buyer_decide`/`seller_decide` closure for
     `run_llm_negotiation`. Each call: (1) rebuilds `context.conversation_history`
@@ -300,6 +326,10 @@ def _make_llm_decide_closure(
                 reasoning=action.reasoning if action is not None else None,
                 rendered_prompt=telemetry.get("rendered_prompt"),
                 hallucination=hallucination,
+                spread_optimal_currency=spread_optimal_currency,
+                spread_optimal_chain=spread_optimal_chain,
+                gas_optimal_currency=gas_optimal_currency,
+                gas_optimal_chain=gas_optimal_chain,
             )
         )
 
@@ -517,6 +547,10 @@ def run_timestep(
             if not candidates:
                 continue
 
+            spread_optimal_currency, spread_optimal_chain, gas_optimal_currency, gas_optimal_chain = (
+                _spread_and_gas_optimal(candidates)
+            )
+
             if use_llm:
                 # Steps 6-9 (LLM path): each side gets its own AgentDecisionContext
                 # (own assigned_model/risk_aversion/currency_zone/wallet), and a
@@ -608,6 +642,10 @@ def run_timestep(
                     listing.true_price,
                     result.llm_decisions,
                     buyer_wallet_balances=buyer_wallet_balances_usd,
+                    spread_optimal_currency=spread_optimal_currency,
+                    spread_optimal_chain=spread_optimal_chain,
+                    gas_optimal_currency=gas_optimal_currency,
+                    gas_optimal_chain=gas_optimal_chain,
                 )
                 seller_decide = _make_llm_decide_closure(
                     seller,
@@ -620,6 +658,10 @@ def run_timestep(
                     listing.true_price,
                     result.llm_decisions,
                     buyer_wallet_balances=buyer_wallet_balances_usd,
+                    spread_optimal_currency=spread_optimal_currency,
+                    spread_optimal_chain=spread_optimal_chain,
+                    gas_optimal_currency=gas_optimal_currency,
+                    gas_optimal_chain=gas_optimal_chain,
                 )
 
                 session = run_llm_negotiation(

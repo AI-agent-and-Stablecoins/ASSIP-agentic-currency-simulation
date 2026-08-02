@@ -73,6 +73,10 @@ class LLMDecisionLogEntry(BaseModel):
     scenario: str
     domestic_or_cross_border: str
     governance_prompt_enabled: bool
+    spread_optimal_currency: str
+    spread_optimal_chain: str
+    gas_optimal_currency: str
+    gas_optimal_chain: str
 
 
 class HallucinationLogEntry(BaseModel):
@@ -422,6 +426,10 @@ def _llm_decision_log_entry(
         scenario=scenario_name,
         domestic_or_cross_border="unknown",
         governance_prompt_enabled=False,
+        spread_optimal_currency=decision.spread_optimal_currency or "",
+        spread_optimal_chain=decision.spread_optimal_chain or "",
+        gas_optimal_currency=decision.gas_optimal_currency or "",
+        gas_optimal_chain=decision.gas_optimal_chain or "",
     )
 
 
