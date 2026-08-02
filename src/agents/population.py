@@ -9,7 +9,7 @@ by the caller -- this module only samples from it.
 
 import random
 
-from src.agents.agent_factory import build_agent, load_agent_profiles
+from src.agents.agent_factory import build_agent, cara_utility_fields, load_agent_profiles
 from src.agents.base_agent import BaseAgent
 
 ROLE_COUNTS = {
@@ -47,7 +47,7 @@ def generate_agent_population(seed: int, model_candidates: list[str]) -> list[Ba
             cara_override = None
             if profile_name in CARA_ELIGIBLE_ROLES:
                 a = rng.choice(CARA_SAMPLE_VALUES)
-                cara_override = ("risk_neutral", None) if a == 0.0 else ("cara", a)
+                cara_override = cara_utility_fields(a)
 
             assigned_model = shuffled_models[slot_index % len(shuffled_models)]
             deterministic_id = f"{profile_name}-seed{seed}-{slot_index:03d}"

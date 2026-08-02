@@ -18,6 +18,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from src.agents.agent_factory import cara_utility_fields
 from src.agents.base_agent import BaseAgent
 from src.utility.utility_factory import build_utility_function
 from src.utils.config_loader import load_yaml_as
@@ -55,12 +56,7 @@ def adapt_cara_coefficient(
         a_next = min(params.a_max, agent.cara_coefficient + params.eta_risk * loss / w_real_after)
 
     agent.cara_coefficient = a_next
-    if a_next == 0.0:
-        agent.utility_type = "risk_neutral"
-        agent.risk_aversion = None
-    else:
-        agent.utility_type = "cara"
-        agent.risk_aversion = a_next
+    agent.utility_type, agent.risk_aversion = cara_utility_fields(a_next)
     agent.utility_fn = build_utility_function(
         agent.utility_type, agent.risk_aversion, agent.multi_attribute_weights, agent.eis
     )

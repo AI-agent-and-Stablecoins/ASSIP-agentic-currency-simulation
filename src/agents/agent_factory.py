@@ -50,6 +50,17 @@ def load_agent_profiles(config_dir: Path = CONFIG_ROOT / "agent_profiles") -> di
     return load_yaml_dir_as(config_dir, AgentProfileConfig)
 
 
+def cara_utility_fields(cara_coefficient: float) -> tuple[str, float | None]:
+    """Map a nominal CARA coefficient to its (utility_type, risk_aversion)
+    pair: a==0.0 is risk_neutral (risk_aversion None), any other value is
+    cara with risk_aversion=cara_coefficient. Shared by `generate_agent_
+    population` (initial assignment, via `build_agent`'s `cara_override`)
+    and `src.economy.risk_adaptation.adapt_cara_coefficient` (post-loss
+    adaptation), so the zero-crossing branch is defined in exactly one
+    place."""
+    return ("risk_neutral", None) if cara_coefficient == 0.0 else ("cara", cara_coefficient)
+
+
 def build_agent(
     profile: AgentProfileConfig,
     *,
