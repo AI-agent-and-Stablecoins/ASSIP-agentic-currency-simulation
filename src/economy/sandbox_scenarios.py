@@ -38,7 +38,7 @@ adds, per sandbox:
    in a liquidity-vs-X sandbox), so both of a sandbox's isolated dimensions
    see some stress, not just one.
 
-Per-sandbox target/gap choices are a documented judgment call (see
+Per-sandbox target/type choices are a documented judgment call (see
 `_SANDBOX_SHOCK_PLANS` below and this task's own commit message) --
 `SANDBOX_CURRENCY_PAIRS`'s "option_a"/"option_b" don't share a single
 "weaker side" convention across all 6 pairs (which dimension a given
@@ -46,13 +46,22 @@ config's "option_a" favors differs sandbox to sandbox), so each pick is
 reasoned about individually rather than mechanically.
 
 Day layout: the H4 pair sits at day 110 (`_CRISIS_WARNING_DAY`) plus a
-0/5/10/20-day gap (mirroring master_simulation.yaml's own H4 sweep), and the
+FIXED `_DEPEG_GAP_DAYS`-day gap, identical for all 6 sandboxes, and the
 additional shock sits at day 160 (`_ADDITIONAL_SHOCK_DAY`). Both are >=15
 days clear of master_simulation's last macro shock (day 90) and of each
-other even at the widest gap (20), matching Task 12's non-confounding
-spacing convention -- the only shocks deliberately close together are the
-crisis_warning/depeg_event pair itself, since proximity is exactly what H4
-tests.
+other, matching Task 12's non-confounding spacing convention. The gap is
+deliberately NOT varied per sandbox (an earlier revision cycled it through
+0/5/10/20 per sandbox, mirroring master_simulation.yaml's own H4 sweep --
+removed on review): gap IS the H4 proximity variable master's own sweep
+already tests across the year; letting it also vary BETWEEN sandboxes
+would mean two sandboxes that are each supposed to hold everything but
+their named factor constant are actually testing different crisis-
+proximity conditions from each other, a second confounded variable this
+plan's sandboxes exist specifically to avoid. Every other aspect a
+sandbox's own crisis/depeg pair varies (which currency it targets, and
+the additional shock's type/target) is the mechanically-necessary minimum
+for a currency-targeted shock to land at all in that sandbox's synthetic
+universe, not a proximity/timing difference.
 """
 
 from dataclasses import dataclass
@@ -61,6 +70,7 @@ from src.currencies.currency import CurrencyConfig
 from src.economy.shocks import ScenarioConfig, ShockEvent, ShockType
 
 _CRISIS_WARNING_DAY = 110
+_DEPEG_GAP_DAYS = 10  # identical for every sandbox -- see module docstring's "Day layout" section
 _ADDITIONAL_SHOCK_DAY = 160
 _CRISIS_WARNING_MAGNITUDE = 0.05
 _DEPEG_MAGNITUDE = 0.15
@@ -69,7 +79,6 @@ _DEPEG_MAGNITUDE = 0.15
 @dataclass(frozen=True)
 class _SandboxShockPlan:
     depeg_target: str  # "a" or "b" -- which of the sandbox's two CurrencyConfigs gets the H4 pair
-    depeg_gap_days: int  # 0/5/10/20, matching master_simulation.yaml's own H4 sweep gaps
     additional_shock_type: ShockType
     additional_shock_target: str  # "a" or "b"
     additional_shock_magnitude: float
@@ -86,7 +95,6 @@ _SANDBOX_SHOCK_PLANS: dict[str, _SandboxShockPlan] = {
     # dimension too.
     "liquidity_vs_governance": _SandboxShockPlan(
         depeg_target="a",
-        depeg_gap_days=0,
         additional_shock_type=ShockType.LIQUIDITY_CRUNCH,
         additional_shock_target="b",
         additional_shock_magnitude=0.20,
@@ -98,7 +106,6 @@ _SANDBOX_SHOCK_PLANS: dict[str, _SandboxShockPlan] = {
     # axis (and giving a clean `apply_currency_shock`-mutation test case).
     "governance_vs_stability": _SandboxShockPlan(
         depeg_target="b",
-        depeg_gap_days=5,
         additional_shock_type=ShockType.GOVERNANCE_DOWNGRADE,
         additional_shock_target="b",
         additional_shock_magnitude=0.15,
@@ -110,7 +117,6 @@ _SANDBOX_SHOCK_PLANS: dict[str, _SandboxShockPlan] = {
     # liquidity_crunch on option_b, the lower-liquidity side.
     "liquidity_vs_stability": _SandboxShockPlan(
         depeg_target="a",
-        depeg_gap_days=10,
         additional_shock_type=ShockType.LIQUIDITY_CRUNCH,
         additional_shock_target="b",
         additional_shock_magnitude=0.20,
@@ -130,7 +136,6 @@ _SANDBOX_SHOCK_PLANS: dict[str, _SandboxShockPlan] = {
     # isolated liquidity dimension.
     "asset_backing_vs_liquidity": _SandboxShockPlan(
         depeg_target="b",
-        depeg_gap_days=20,
         additional_shock_type=ShockType.LIQUIDITY_CRUNCH,
         additional_shock_target="a",
         additional_shock_magnitude=0.20,
@@ -151,7 +156,6 @@ _SANDBOX_SHOCK_PLANS: dict[str, _SandboxShockPlan] = {
     # test.
     "asset_backing_vs_stability": _SandboxShockPlan(
         depeg_target="b",
-        depeg_gap_days=0,
         additional_shock_type=ShockType.REGULATORY_ENFORCEMENT,
         additional_shock_target="b",
         additional_shock_magnitude=0.20,
@@ -167,7 +171,6 @@ _SANDBOX_SHOCK_PLANS: dict[str, _SandboxShockPlan] = {
     # dimension.
     "asset_backing_vs_governance": _SandboxShockPlan(
         depeg_target="a",
-        depeg_gap_days=10,
         additional_shock_type=ShockType.GOVERNANCE_DOWNGRADE,
         additional_shock_target="b",
         additional_shock_magnitude=0.15,
@@ -204,7 +207,7 @@ def build_sandbox_scenario(
             target_currency=depeg_symbol,
         ),
         ShockEvent(
-            day=_CRISIS_WARNING_DAY + plan.depeg_gap_days,
+            day=_CRISIS_WARNING_DAY + _DEPEG_GAP_DAYS,
             type=ShockType.DEPEG_EVENT,
             magnitude=_DEPEG_MAGNITUDE,
             target_currency=depeg_symbol,
