@@ -1,0 +1,77 @@
+"""Shared logistic-regression fitting for every H1-H5 hypothesis, per
+docs/superpowers/specs/2026-08-02-phase3-plan5-econometrics-design.md Sec 3:
+per-decision logit, agent-clustered standard errors, McFadden pseudo-R^2/
+adjusted pseudo-R^2 in place of OLS's R^2/adjusted R^2 (undefined for a
+binary outcome).
+"""
+
+from dataclasses import dataclass
+
+import pandas as pd
+import statsmodels.api as sm
+
+
+@dataclass(frozen=True)
+class RegressionResult:
+    hypothesis: str
+    regressor: str
+    beta: float
+    se: float
+    ci_lower: float
+    ci_upper: float
+    p_value: float
+    pseudo_r2: float
+    adjusted_pseudo_r2: float
+    n_obs: int
+
+
+def fit_clustered_logit(
+    hypothesis: str,
+    df: pd.DataFrame,
+    dependent_col: str,
+    regressor_col: str,
+    cluster_col: str,
+    fixed_effect_cols: list[str],
+) -> RegressionResult:
+    """Fits `dependent_col ~ regressor_col + <fixed_effect_cols dummies>`
+    via logistic regression with standard errors clustered by
+    `cluster_col` (agent-level, per the design spec's Sec 0 decision).
+    Returns `regressor_col`'s own coefficient/SE/CI/p-value plus the whole
+    model's McFadden pseudo-R^2/adjusted pseudo-R^2 and sample size.
+    Raises `ValueError` if `df` is empty (a hypothesis's dataset builder
+    found no eligible decisions at all -- a real problem to surface
+    loudly, not silently return a meaningless fit for).
+    """
+    if df.empty:
+        raise ValueError(
+            f"fit_clustered_logit({hypothesis!r}): received an empty DataFrame -- "
+            "the dataset builder found no eligible decisions for this hypothesis."
+        )
+
+    y = df[dependent_col].astype(float)
+    x_numeric = df[[regressor_col]].astype(float)
+    if fixed_effect_cols:
+        x_dummies = pd.get_dummies(df[fixed_effect_cols], drop_first=True, dtype=float)
+        x = pd.concat([x_numeric, x_dummies], axis=1)
+    else:
+        x = x_numeric
+    x = sm.add_constant(x)
+
+    model = sm.Logit(y, x)
+    result = model.fit(cov_type="cluster", cov_kwds={"groups": df[cluster_col]}, disp=0)
+
+    ci = result.conf_int().loc[regressor_col]
+    adjusted_pseudo_r2 = 1.0 - (result.llf - result.df_model) / result.llnull
+
+    return RegressionResult(
+        hypothesis=hypothesis,
+        regressor=regressor_col,
+        beta=float(result.params[regressor_col]),
+        se=float(result.bse[regressor_col]),
+        ci_lower=float(ci.iloc[0]),
+        ci_upper=float(ci.iloc[1]),
+        p_value=float(result.pvalues[regressor_col]),
+        pseudo_r2=float(result.prsquared),
+        adjusted_pseudo_r2=float(adjusted_pseudo_r2),
+        n_obs=int(result.nobs),
+    )
