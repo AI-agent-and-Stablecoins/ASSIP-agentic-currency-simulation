@@ -89,38 +89,49 @@ triggering problem 2 above.
 real `openrouter_client` and a real `polygon_client` explicitly (raises
 `ValueError` otherwise) -- the code-level half of "explicit confirmation
 before billed spend"; this function never decides on its own to make that
-call. Whether the LLM-driven day-loop path (`run_timestep(use_llm=True)`)
-actually runs is governed by whether an `openrouter_client` was supplied at
-all, not by `dry_run` directly: `dry_run=True` (the default) is only a
-promise that *no real client is required*, not that a client can never be
-passed. A caller may still pass their own mock `openrouter_client` (e.g.
-`tests/llm_test_helpers.py`'s `mock_openrouter_client`) alongside
-`dry_run=True` to exercise the LLM-vs-LLM negotiation path in a fast test
-without touching a real API -- `run_matrix` doesn't care which kind of
-client it was handed, only that `dry_run=False` guarantees a real one.
+call. `dry_run=True` (the default) is the mirror-image guarantee: it now
+REFUSES any externally-supplied `openrouter_client`/`polygon_client` at
+all (raises `ValueError`), real or mock -- `run_matrix` has no way to tell
+a real `httpx.Client` from a test-only mock one apart by inspecting the
+object, so the only way to make `dry_run=True` an unconditional "no real
+network call is possible" guarantee is to never accept an external client
+under it, full stop. (An earlier version of this gate let `dry_run=True`
+accept any caller-supplied client, reasoning that a caller wouldn't pass a
+real one under dry_run; that trust was the loophole -- nothing stopped a
+caller from doing exactly that, real client + `dry_run=True`, and getting
+silent real spend. Closed here.)
+
+To exercise the LLM-driven day-loop path (`run_timestep(use_llm=True)`)
+under `dry_run=True` without an external client, use `exercise_llm_path=
+True`: `run_matrix` then builds its OWN mock OpenRouter/Polygon clients
+internally, via `tests/llm_test_helpers.py`'s `mock_openrouter_client`/
+`mock_polygon_client` -- clients that are mocks by construction, never by
+caller promise. `mock_llm_decision` (a plain response dict, not a client)
+optionally overrides the default canned decision used to build that
+internal mock, for a test that needs a specific proposed currency/price/
+action; passing it without `exercise_llm_path=True` (under `dry_run=True`)
+raises `ValueError`, since it would otherwise silently do nothing.
 
 This module does NOT construct mock `httpx.Client`s internally BY DEFAULT
 (unlike the design spec Sec 10's literal wording, "both clients are
 mock-transport fakes constructed internally if not supplied") -- the task
 brief that superseded that spec explicitly left this as the implementer's
 call ("or just skip use_llm/live-price wiring entirely in dry-run if
-that's simpler"). Instead, when no `openrouter_client` is supplied (the
-common `dry_run=True` case), the day loop simply runs the deterministic
-rule-based path (`use_llm=False`) -- zero network access, zero mock-client
-bookkeeping, and still exercises every other mechanism this task must
-integrate (population generation, environment construction, cross-border
-pairing, sandbox wallet seeding, persistence, provenance).
+that's simpler"). Instead, when `exercise_llm_path=False` (the default),
+the day loop simply runs the deterministic rule-based path
+(`use_llm=False`) -- zero network access, zero mock-client bookkeeping,
+and still exercises every other mechanism this task must integrate
+(population generation, environment construction, cross-border pairing,
+sandbox wallet seeding, persistence, provenance).
 
 A later fix round revisited this for one specific, narrow reason: `run_
 matrix`'s OWN test suite (`tests/test_matrix_runner.py`) never exercised
 the LLM-decision + LLM-decision-persistence path end-to-end, since every
 test used `dry_run=True` with no client supplied. `exercise_llm_path:
 bool = False` closes that gap without changing the default path at all:
-when `True` AND `dry_run=True`, `run_matrix` builds mock clients
-internally via `tests/llm_test_helpers.py`'s `mock_openrouter_client`/
-`mock_polygon_client` (only for whichever of `openrouter_client`/
-`polygon_client` the caller didn't already supply -- a caller-supplied
-client is always respected as-is) and runs with `use_llm=True`. This DOES
+when `True` (always alongside `dry_run=True`, since `exercise_llm_path`
+with `dry_run=False` is simply the normal real-client path), `run_matrix`
+builds mock clients internally and runs with `use_llm=True`. This DOES
 mean `src/simulation/matrix_runner.py` imports `tests/llm_test_helpers.py`
 -- a tests-only module -- but only inside the `exercise_llm_path` branch
 (a local import, not a module-level one), and only when a caller
@@ -141,15 +152,15 @@ the master cell only, since every `configs/agent_profiles/*.yaml`
 profile's `initial_wallet` holds it) would be rejected as
 "Unsupported currency" in all 12 sandbox cells, producing a synthetic
 `WALK_AWAY` there instead of a genuine `ACCEPT`. Fixed by building a
-*per-cell* mock OpenRouter client (still only when the caller didn't
-supply their own) whose canned `proposed_currency` is `"USDC"` for the
-master cell but `next(iter(spec.currencies))` -- one of that sandbox's
-own two symbols, guaranteed held by every agent post-`_seed_sandbox_
-wallets` -- for each of the 12 sandbox cells. `mock_polygon_client`,
-whose canned responses are currency-ticker-keyed but degrade to an empty
-`{"results": []}` for any ticker with no entry regardless of which cell
-is running, has no such per-cell dependency and is still built once for
-the whole matrix run.
+*per-cell* mock OpenRouter client whose canned `proposed_currency` is
+`"USDC"` for the master cell but `next(iter(spec.currencies))` -- one of
+that sandbox's own two symbols, guaranteed held by every agent post-
+`_seed_sandbox_wallets` -- for each of the 12 sandbox cells (unless
+`mock_llm_decision` was supplied, which is then used verbatim for every
+cell instead). `mock_polygon_client`, whose canned responses are
+currency-ticker-keyed but degrade to an empty `{"results": []}` for any
+ticker with no entry regardless of which cell is running, has no such
+per-cell dependency and is still built once for the whole matrix run.
 
 Model-candidate verification (`src.llm.llm_router.verify_model_candidates`)
 is called at most ONCE per `run_matrix` call -- not once per cell/seed --
@@ -425,6 +436,7 @@ def run_matrix(
     keep_daily_results: bool = False,
     progress_callback: Callable[[str, int, int], None] | None = None,
     exercise_llm_path: bool = False,
+    mock_llm_decision: dict | None = None,
 ) -> tuple[list[MatrixCellResult], list[tuple[str, int, Exception]]]:
     """Run the 13-cell x `seeds` experiment matrix for `num_days` days each.
 
@@ -499,6 +511,20 @@ def run_matrix(
             "gate. dry_run=True (the default) never requires real clients."
         )
 
+    if dry_run and (openrouter_client is not None or polygon_client is not None):
+        raise ValueError(
+            "run_matrix(dry_run=True) never accepts an externally-supplied openrouter_client/polygon_client -- "
+            "real or mock, run_matrix cannot tell them apart, and that ambiguity is exactly what let a real "
+            "client slip through under dry_run=True. Use exercise_llm_path=True (optionally with "
+            "mock_llm_decision to customize the canned response) to exercise the LLM path under dry_run instead."
+        )
+
+    if mock_llm_decision is not None and not (dry_run and exercise_llm_path):
+        raise ValueError(
+            "mock_llm_decision only applies alongside dry_run=True and exercise_llm_path=True -- passing it "
+            "otherwise would silently do nothing."
+        )
+
     if session is None:
         from database.session import create_all_tables, new_session
 
@@ -508,22 +534,22 @@ def run_matrix(
     if matrix_run_id is None:
         matrix_run_id = generate_id("matrix")
 
-    # Caller-supplied clients are always respected as-is (captured here,
-    # before exercise_llm_path's auto-construction below, so that intent is
-    # never lost). `mock_openrouter_client` is deliberately NOT built here
-    # for the whole matrix -- unlike `mock_polygon_client`, its canned
-    # response's `proposed_currency` must be valid for whichever cell is
-    # currently running (the master cell's real universe vs. each sandbox's
-    # own synthetic pair), so it's built fresh per cell inside the loop
-    # below instead. See this module's docstring's review-fix paragraph.
-    caller_supplied_openrouter_client = openrouter_client
-    if dry_run and exercise_llm_path and polygon_client is None:
+    # Under dry_run=True, openrouter_client/polygon_client are guaranteed
+    # None by the gate above -- any client this run uses is either the real
+    # one required by dry_run=False, or one this function builds itself
+    # below. `mock_openrouter_client` is deliberately NOT built here for the
+    # whole matrix -- unlike `mock_polygon_client`, its canned response's
+    # `proposed_currency` must be valid for whichever cell is currently
+    # running (the master cell's real universe vs. each sandbox's own
+    # synthetic pair), so it's built fresh per cell inside the loop below
+    # instead. See this module's docstring's review-fix paragraph.
+    if dry_run and exercise_llm_path:
         from tests.llm_test_helpers import mock_polygon_client
 
         polygon_client = mock_polygon_client({})
 
     available_models = _resolve_available_models(model_candidates, None if dry_run else openrouter_client)
-    use_llm = caller_supplied_openrouter_client is not None or (dry_run and exercise_llm_path)
+    use_llm = (not dry_run) or exercise_llm_path
 
     git_commit_hash = compute_git_commit_hash()
     prompt_version_hash = _prompt_version_hash()
@@ -553,27 +579,23 @@ def run_matrix(
         # profile's initial_wallet holds it, confirmed against every
         # configs/agent_profiles/*.yaml file), or one of the sandbox's own
         # two symbols (guaranteed held by every agent post-
-        # `_seed_sandbox_wallets`) for each of the 12 sandbox cells. A
-        # caller-supplied openrouter_client is always used as-is instead, for
-        # every cell -- see this module's docstring's review-fix paragraph.
-        cell_openrouter_client = caller_supplied_openrouter_client
-        if cell_openrouter_client is None and dry_run and exercise_llm_path:
+        # `_seed_sandbox_wallets`) for each of the 12 sandbox cells. Under
+        # dry_run=False, openrouter_client is the real client required above.
+        cell_openrouter_client = openrouter_client
+        if dry_run and exercise_llm_path:
             from tests.llm_test_helpers import mock_openrouter_client
 
             cell_mock_currency = "USDC" if spec.currencies is None else next(iter(spec.currencies))
-            cell_openrouter_client = mock_openrouter_client(
-                {
-                    model_id: {
-                        "action": "ACCEPT",
-                        "proposed_currency": cell_mock_currency,
-                        "proposed_chain": "ethereum",
-                        "amount": 1.0,
-                        "price": 1.0,
-                        "reasoning": "exercise_llm_path canned response",
-                    }
-                    for model_id in model_candidates
-                }
-            )
+            default_decision = {
+                "action": "ACCEPT",
+                "proposed_currency": cell_mock_currency,
+                "proposed_chain": "ethereum",
+                "amount": 1.0,
+                "price": 1.0,
+                "reasoning": "exercise_llm_path canned response",
+            }
+            decision = mock_llm_decision if mock_llm_decision is not None else default_decision
+            cell_openrouter_client = mock_openrouter_client({model_id: decision for model_id in model_candidates})
 
         for seed in seeds:
             population = generate_agent_population(seed, available_models)

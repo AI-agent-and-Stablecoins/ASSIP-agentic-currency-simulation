@@ -234,26 +234,57 @@ def test_run_matrix_persists_provenance_agent_and_transaction_rows():
     assert session.query(TransactionRecord).count() == total_transactions_returned
 
 
-def test_run_matrix_works_with_a_supplied_mock_openrouter_client_under_dry_run():
-    """`dry_run=True` doesn't forbid a caller-supplied client -- it only
-    means a real one is never required. Supplying a mock client should
-    switch the day loop onto the LLM-driven path (`use_llm=True`
-    internally) without hitting any real network endpoint."""
-    client = mock_openrouter_client({"vendor/fake-model": {
-        "action": "ACCEPT",
-        "proposed_currency": "SBX1_HILIQ_LOGOV",
-        "proposed_chain": "ethereum",
-        "amount": 1.0,
-        "price": 90.0,
-        "reasoning": "test reasoning",
-    }})
+def test_run_matrix_refuses_any_externally_supplied_client_under_dry_run_true():
+    """`dry_run=True` must guarantee no real network call is possible --
+    `run_matrix` cannot distinguish a real `httpx.Client` from a test-only
+    mock one by inspecting the object, so under `dry_run=True` it now
+    refuses ANY externally-supplied client (real or mock) rather than
+    trusting the caller. Use `exercise_llm_path=True` (optionally with
+    `mock_llm_decision`) to exercise the LLM path under dry_run instead."""
+    fake_client = mock_openrouter_client({})
 
+    with pytest.raises(ValueError):
+        run_matrix(
+            model_candidates=MODEL_CANDIDATES,
+            seeds=[0],
+            num_days=1,
+            dry_run=True,
+            openrouter_client=fake_client,
+            session=_session(),
+        )
+
+    with pytest.raises(ValueError):
+        run_matrix(
+            model_candidates=MODEL_CANDIDATES,
+            seeds=[0],
+            num_days=1,
+            dry_run=True,
+            polygon_client=fake_client,
+            session=_session(),
+        )
+
+
+def test_exercise_llm_path_accepts_a_custom_mock_llm_decision_under_dry_run():
+    """A caller wanting a specific canned LLM decision under `dry_run=True`
+    (e.g. to exercise a particular proposed currency/price) supplies
+    `mock_llm_decision` -- a plain response dict, not a client object --
+    which `run_matrix` uses to build its own guaranteed-mock internal
+    client. There is still no way to pass an actual `httpx.Client` under
+    `dry_run=True` (see the refusal test above)."""
     results, failures = run_matrix(
         model_candidates=MODEL_CANDIDATES,
         seeds=[0],
         num_days=1,
         dry_run=True,
-        openrouter_client=client,
+        exercise_llm_path=True,
+        mock_llm_decision={
+            "action": "ACCEPT",
+            "proposed_currency": "SBX1_HILIQ_LOGOV",
+            "proposed_chain": "ethereum",
+            "amount": 1.0,
+            "price": 90.0,
+            "reasoning": "test reasoning",
+        },
         session=_session(),
         keep_daily_results=True,
     )
@@ -262,6 +293,21 @@ def test_run_matrix_works_with_a_supplied_mock_openrouter_client_under_dry_run()
     assert len(results) == 13
     master = _by_cell_key(results, "master")
     assert master.daily_results[0].llm_decisions  # LLM path actually ran
+
+
+def test_mock_llm_decision_rejected_outside_exercise_llm_path():
+    """`mock_llm_decision` only means anything alongside `exercise_llm_path
+    =True` -- passing it without `exercise_llm_path` (or under `dry_run
+    =False`) is a caller error, not a silently-ignored no-op."""
+    with pytest.raises(ValueError):
+        run_matrix(
+            model_candidates=MODEL_CANDIDATES,
+            seeds=[0],
+            num_days=1,
+            dry_run=True,
+            mock_llm_decision={"action": "ACCEPT"},
+            session=_session(),
+        )
 
 
 def test_seed_sandbox_wallets_splits_by_usd_value_not_raw_units():
