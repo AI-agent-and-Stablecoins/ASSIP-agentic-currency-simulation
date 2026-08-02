@@ -202,26 +202,65 @@ module's own fast tests): three related, additive parameters.
   caller driving a real multi-week run wires in whatever progress
   reporting it wants. `None` (the default) is a no-op: zero behavior
   change for every existing caller.
-- Per-cell/seed error recovery. Each cell/seed's day loop (from
-  `random.Random(seed)` through appending that cell/seed's
-  `MatrixCellResult`) is wrapped in a `try/except Exception`; a failure
-  aborts only that cell/seed's remaining days (day-to-day state within a
-  cell is sequential/stateful, so partial completion of one cell/seed is
-  not meaningfully resumable mid-cell) and is recorded as `(cell_key,
-  seed, exception)` in a `failures` list, rather than propagating and
-  losing every other cell/seed's results. `run_matrix` therefore returns
-  `(results, failures)` -- a 2-tuple -- rather than a bare
-  `list[MatrixCellResult]`; `failures` is empty on a fully clean run. The
-  session is rolled back before continuing to the next cell/seed, so an
-  uncommitted partial day never corrupts a later cell/seed's commits.
-  Population generation, environment construction, and the
-  `SimulationRunRepository`/`session.commit()` call that registers this
-  cell/seed's `run_id` all stay OUTSIDE this try/except, deliberately: a
-  colliding `run_id` (see `matrix_run_id`'s docstring) must still raise
-  `IntegrityError` straight to the caller, not be silently downgraded to a
-  `failures` entry.
+- Per-cell/seed error recovery. Each cell/seed's day loop is wrapped in a
+  `try/except Exception`; a failure aborts only that cell/seed's remaining
+  days and is recorded as `(cell_key, seed, exception)` in a `failures`
+  list, rather than propagating and losing every other cell/seed's
+  results. `run_matrix` therefore returns `(results, failures)` -- a
+  2-tuple -- rather than a bare `list[MatrixCellResult]`; `failures` is
+  empty on a fully clean run. The session is rolled back before continuing
+  to the next cell/seed, so an uncommitted partial day never corrupts a
+  later cell/seed's commits. The `SimulationRunRepository`/
+  `session.commit()` call that registers a FRESH cell/seed's `run_id`
+  stays OUTSIDE this try/except, deliberately: a colliding `run_id` (see
+  `matrix_run_id`'s docstring) must still raise `IntegrityError` straight
+  to the caller, not be silently downgraded to a `failures` entry. (A
+  RESUMED cell/seed, see `checkpoint_dir` below, skips that call entirely
+  -- its `run_id` was already registered by the attempt being resumed.)
+
+`checkpoint_dir` (default `None`, no behavior change for any existing
+caller): a directory `run_matrix` uses to persist a per-cell/seed
+resumability checkpoint. A failure partway through a long cell/seed (e.g.
+day 300 of a 365-day run) used to mean re-running that entire cell/seed
+from day 0 to get a complete dataset -- expensive for a real, billed run.
+When `checkpoint_dir` is set, after each day's `persist_full_timestep`
+commits (so the checkpoint always reflects fully-durable state, never a
+day that could be rolled back), `run_matrix` pickles that cell/seed's
+`(env, rng, next_day, daily_results, num_days_completed,
+total_transactions, total_llm_decisions)` to
+`checkpoint_dir / f"{run_id}.pkl"`, overwriting the previous checkpoint
+for that `run_id`. At the START of a cell/seed, if that file already
+exists, `run_matrix` loads it instead of building a fresh population/
+`Environment` and resumes the day loop at `next_day` -- population
+generation, `Environment.build_from_population`, sandbox wallet seeding,
+and `CrossZoneMarketplace` swapping are all skipped on a resume, since
+the loaded `env` already reflects them (and any days already simulated).
+On successful completion of the day loop, the checkpoint file is deleted
+(no longer needed). This requires the SAME `matrix_run_id` (so `run_id`
+matches) and the SAME database (so previously-committed days are still
+there) as the attempt being resumed -- exactly the existing "resume under
+this exact id" contract `matrix_run_id`'s docstring already describes.
+`Environment` holds no client/connection objects (those are passed to
+`run_timestep` separately, per call), so it and everything it references
+(agents, utility functions, wallets, macro/trust/event-log state) pickle
+cleanly.
+
+Resuming the WHOLE matrix (not just one cell/seed) this way also needs a
+third case beyond "has a checkpoint" / "starts fresh": a cell/seed that
+already ran to full completion in an earlier call has no checkpoint file
+(it was deleted on success) but IS already registered in
+`SimulationRunRecord` -- re-registering it would raise `IntegrityError`,
+and re-simulating it would waste real spend re-doing already-persisted
+work. `run_matrix` detects this (checkpoint missing + `run_id` already in
+the database) and skips that cell/seed entirely, so a caller can simply
+re-invoke `run_matrix` with the same `matrix_run_id`/database/
+`checkpoint_dir` after a crash: already-complete cells no-op, the
+interrupted one resumes from its last persisted day, and anything that
+never started runs fresh -- without the caller needing to track which
+cells already finished.
 """
 
+import pickle
 import random
 from pathlib import Path
 from typing import Callable
@@ -230,6 +269,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
+from database.models import SimulationRunRecord
 from database.repository import SimulationRunLogEntry, SimulationRunRepository, persist_full_timestep
 from src.agents.base_agent import BaseAgent
 from src.agents.population import generate_agent_population
@@ -424,6 +464,50 @@ def _seed_sandbox_wallets(
         }
 
 
+class _CellSeedCheckpoint(BaseModel):
+    """Pickled per-cell/seed resumability snapshot -- see `run_matrix`'s
+    `checkpoint_dir` docstring paragraph. Not a database model: this is a
+    side-channel file, not a persisted table, since it holds live Python
+    objects (`Environment`, `random.Random`) with no natural relational
+    shape."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    env: Environment
+    rng: random.Random
+    next_day: int
+    daily_results: list[TimestepResult]
+    num_days_completed: int
+    total_transactions: int
+    total_llm_decisions: int
+
+
+def _checkpoint_path(checkpoint_dir: Path, run_id: str) -> Path:
+    return checkpoint_dir / f"{run_id}.pkl"
+
+
+def _save_checkpoint(checkpoint_dir: Path, run_id: str, checkpoint: _CellSeedCheckpoint) -> None:
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    path = _checkpoint_path(checkpoint_dir, run_id)
+    tmp_path = path.with_suffix(".pkl.tmp")
+    with open(tmp_path, "wb") as f:
+        pickle.dump(checkpoint, f)
+    tmp_path.replace(path)  # atomic on both POSIX and Windows -- never leaves a half-written checkpoint
+
+
+def _load_checkpoint(checkpoint_dir: Path, run_id: str) -> _CellSeedCheckpoint | None:
+    path = _checkpoint_path(checkpoint_dir, run_id)
+    if not path.exists():
+        return None
+    with open(path, "rb") as f:
+        return pickle.load(f)
+
+
+def _delete_checkpoint(checkpoint_dir: Path, run_id: str) -> None:
+    path = _checkpoint_path(checkpoint_dir, run_id)
+    path.unlink(missing_ok=True)
+
+
 def run_matrix(
     model_candidates: list[str],
     seeds: list[int],
@@ -437,6 +521,7 @@ def run_matrix(
     progress_callback: Callable[[str, int, int], None] | None = None,
     exercise_llm_path: bool = False,
     mock_llm_decision: dict | None = None,
+    checkpoint_dir: Path | None = None,
 ) -> tuple[list[MatrixCellResult], list[tuple[str, int, Exception]]]:
     """Run the 13-cell x `seeds` experiment matrix for `num_days` days each.
 
@@ -598,54 +683,93 @@ def run_matrix(
             cell_openrouter_client = mock_openrouter_client({model_id: decision for model_id in model_candidates})
 
         for seed in seeds:
-            population = generate_agent_population(seed, available_models)
-            env = Environment.build_from_population(
-                MASTER_SCENARIO_NAME, population, currencies=spec.currencies, scenario=cell_scenario
-            )
-            if spec.currencies is not None:
-                _seed_sandbox_wallets(
-                    env.agents, spec.currencies, real_currency_universe, env.macro_state.peg_reference_rates
-                )
-            if spec.cross_border:
-                env.marketplace = CrossZoneMarketplace(env.agents)
-
             run_id = f"{matrix_run_id}-{spec.key}-seed{seed}"
 
-            # Deliberately OUTSIDE the try/except below: a colliding run_id
-            # (see `matrix_run_id`'s docstring -- reusing the same explicit
-            # matrix_run_id against the same database is an intentional
-            # "resume under this exact id" request) must still raise
-            # IntegrityError to the caller immediately, not be swallowed
-            # into `failures` as if it were an ordinary per-cell/seed
-            # simulation failure.
-            SimulationRunRepository(session).record(
-                SimulationRunLogEntry(
-                    run_id=run_id,
-                    scenario_name=MASTER_SCENARIO_NAME,
-                    research_mode="factual",
-                    random_seed=seed,
-                    model_roster_summary=model_roster_summary_for(population),
-                    prompt_version_hash=prompt_version_hash,
-                    git_commit_hash=git_commit_hash,
-                    config_hash=config_hash,
+            checkpoint = _load_checkpoint(checkpoint_dir, run_id) if checkpoint_dir is not None else None
+
+            if (
+                checkpoint is None
+                and checkpoint_dir is not None
+                and session.get(SimulationRunRecord, run_id) is not None
+            ):
+                # This run_id is already registered but has no checkpoint --
+                # it fully completed in an earlier run_matrix call (a
+                # completed cell/seed's checkpoint is deleted, see below) and
+                # its data is already durably persisted. Re-registering it
+                # would raise IntegrityError; re-simulating it would waste
+                # real spend re-doing already-done work. Skip it entirely --
+                # unlike matrix_run_id's docstring's OTHER collision case
+                # (no checkpoint_dir at all), this is the intended, safe
+                # "resume the whole matrix" path: already-done cells no-op,
+                # the interrupted one resumes below, anything that never
+                # started runs fresh.
+                continue
+
+            if checkpoint is not None:
+                # Resuming: env/rng/counters come from the checkpoint, which
+                # already reflects population generation, sandbox wallet
+                # seeding, cross-border marketplace swapping, and every day
+                # already simulated -- none of that is redone. The prior
+                # attempt already registered this run_id (that's how this
+                # checkpoint came to exist), so SimulationRunRepository.record
+                # is skipped too; recording it again would raise IntegrityError.
+                env = checkpoint.env
+                rng = checkpoint.rng
+                start_day = checkpoint.next_day
+                daily_results = checkpoint.daily_results
+                num_days_completed = checkpoint.num_days_completed
+                total_transactions = checkpoint.total_transactions
+                total_llm_decisions = checkpoint.total_llm_decisions
+            else:
+                population = generate_agent_population(seed, available_models)
+                env = Environment.build_from_population(
+                    MASTER_SCENARIO_NAME, population, currencies=spec.currencies, scenario=cell_scenario
                 )
-            )
-            session.commit()
+                if spec.currencies is not None:
+                    _seed_sandbox_wallets(
+                        env.agents, spec.currencies, real_currency_universe, env.macro_state.peg_reference_rates
+                    )
+                if spec.cross_border:
+                    env.marketplace = CrossZoneMarketplace(env.agents)
+
+                # Deliberately OUTSIDE the try/except below: a colliding run_id
+                # (see `matrix_run_id`'s docstring -- reusing the same explicit
+                # matrix_run_id against the same database is an intentional
+                # "resume under this exact id" request) must still raise
+                # IntegrityError to the caller immediately, not be swallowed
+                # into `failures` as if it were an ordinary per-cell/seed
+                # simulation failure.
+                SimulationRunRepository(session).record(
+                    SimulationRunLogEntry(
+                        run_id=run_id,
+                        scenario_name=MASTER_SCENARIO_NAME,
+                        research_mode="factual",
+                        random_seed=seed,
+                        model_roster_summary=model_roster_summary_for(population),
+                        prompt_version_hash=prompt_version_hash,
+                        git_commit_hash=git_commit_hash,
+                        config_hash=config_hash,
+                    )
+                )
+                session.commit()
+
+                rng = random.Random(seed)
+                start_day = 0
+                daily_results = []
+                num_days_completed = 0
+                total_transactions = 0
+                total_llm_decisions = 0
 
             # Everything from here on is this cell/seed's actual simulated
             # day loop -- the part that scales with `num_days` and can fail
             # partway through a long real run. A failure here aborts only
-            # this cell/seed's remaining days (day-to-day state within a
-            # cell is sequential/stateful, so there's no meaningful way to
-            # resume mid-cell) and is recorded in `failures` rather than
-            # aborting every other cell/seed in the matrix.
+            # this cell/seed's remaining days and is recorded in `failures`
+            # rather than aborting every other cell/seed in the matrix; with
+            # `checkpoint_dir` set, a subsequent `run_matrix` call (same
+            # `matrix_run_id`, same database) resumes from the last
+            # successfully-persisted day instead of re-running from day 0.
             try:
-                rng = random.Random(seed)
-                daily_results: list[TimestepResult] = []
-                num_days_completed = 0
-                total_transactions = 0
-                total_llm_decisions = 0
-                for day in range(num_days):
+                for day in range(start_day, num_days):
                     result = run_timestep(
                         env,
                         day=day,
@@ -662,6 +786,28 @@ def run_matrix(
                     total_llm_decisions += len(result.llm_decisions)
                     if keep_daily_results:
                         daily_results.append(result)
+
+                    if checkpoint_dir is not None:
+                        # persist_full_timestep has already committed this
+                        # day (see its own docstring), so the checkpoint
+                        # below never points past what's durably in the
+                        # database.
+                        _save_checkpoint(
+                            checkpoint_dir,
+                            run_id,
+                            _CellSeedCheckpoint(
+                                env=env,
+                                rng=rng,
+                                next_day=day + 1,
+                                daily_results=daily_results,
+                                num_days_completed=num_days_completed,
+                                total_transactions=total_transactions,
+                                total_llm_decisions=total_llm_decisions,
+                            ),
+                        )
+
+                if checkpoint_dir is not None:
+                    _delete_checkpoint(checkpoint_dir, run_id)  # fully complete -- no longer needed
 
                 results.append(
                     MatrixCellResult(

@@ -638,3 +638,143 @@ def test_exercise_llm_path_under_dry_run_persists_llm_decisions_without_real_net
         assert result.total_transactions > 0, (
             f"cell {result.cell_key!r} (run_id={result.run_id!r}) settled zero transactions"
         )
+
+
+# --- Regression tests for checkpoint/resume (checkpoint_dir) ---------------
+
+
+def test_checkpoint_dir_none_default_leaves_no_new_behavior(tmp_path):
+    """Zero behavior change for every existing caller: without
+    `checkpoint_dir`, run_matrix never touches `tmp_path` at all."""
+    results, failures = run_matrix(
+        model_candidates=MODEL_CANDIDATES, seeds=[0], num_days=2, dry_run=True, session=_session()
+    )
+    assert failures == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_checkpoint_files_are_cleaned_up_after_a_fully_successful_run(tmp_path):
+    results, failures = run_matrix(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[0],
+        num_days=2,
+        dry_run=True,
+        session=_session(),
+        checkpoint_dir=tmp_path,
+    )
+    assert failures == []
+    assert len(results) == 13
+    assert list(tmp_path.glob("*.pkl")) == []
+
+
+def test_a_failed_cell_seed_leaves_a_checkpoint_reflecting_its_last_persisted_day(tmp_path, monkeypatch):
+    """`_build_cell_specs()` yields "master" first, so an injected failure on
+    the second `run_timestep` call lands on master's SECOND day (day=1) of a
+    3-day run -- day 0 must already be checkpointed (next_day=1) by the time
+    the failure aborts the rest of master's days."""
+    import src.simulation.matrix_runner as matrix_runner_module
+
+    original_run_timestep = matrix_runner_module.run_timestep
+    call_count = {"n": 0}
+
+    def flaky_run_timestep(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise RuntimeError("injected failure for checkpoint test")
+        return original_run_timestep(*args, **kwargs)
+
+    monkeypatch.setattr(matrix_runner_module, "run_timestep", flaky_run_timestep)
+
+    matrix_run_id = "checkpoint-fail-test"
+    results, failures = run_matrix(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[0],
+        num_days=3,
+        dry_run=True,
+        session=_session(),
+        checkpoint_dir=tmp_path,
+        matrix_run_id=matrix_run_id,
+    )
+
+    assert len(failures) == 1
+    assert failures[0][0] == "master"
+    assert len(results) == 12
+    assert "master" not in {r.cell_key for r in results}
+
+    checkpoint_file = tmp_path / f"{matrix_run_id}-master-seed0.pkl"
+    assert checkpoint_file.exists()
+
+    import pickle
+
+    with open(checkpoint_file, "rb") as f:
+        checkpoint = pickle.load(f)
+    assert checkpoint.next_day == 1
+    assert checkpoint.num_days_completed == 1
+
+    # Every other (successful) cell's checkpoint was cleaned up.
+    assert {p.name for p in tmp_path.glob("*.pkl")} == {f"{matrix_run_id}-master-seed0.pkl"}
+
+
+def test_resuming_the_whole_matrix_only_redoes_the_failed_cell_seed(tmp_path, monkeypatch):
+    """The realistic recovery flow: after a crash, the caller re-invokes
+    run_matrix with the SAME matrix_run_id/database/checkpoint_dir. Already-
+    complete cells must be skipped (not re-registered, not re-simulated);
+    the interrupted cell must resume from its last persisted day and finish;
+    the final `failures` list must be empty."""
+    import src.simulation.matrix_runner as matrix_runner_module
+
+    original_run_timestep = matrix_runner_module.run_timestep
+    call_count = {"n": 0}
+
+    def flaky_run_timestep(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise RuntimeError("injected failure for resume test")
+        return original_run_timestep(*args, **kwargs)
+
+    monkeypatch.setattr(matrix_runner_module, "run_timestep", flaky_run_timestep)
+
+    session = _session()
+    matrix_run_id = "checkpoint-resume-test"
+
+    first_results, first_failures = run_matrix(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[0],
+        num_days=3,
+        dry_run=True,
+        session=session,
+        checkpoint_dir=tmp_path,
+        matrix_run_id=matrix_run_id,
+    )
+    assert len(first_failures) == 1
+    assert len(first_results) == 12
+
+    monkeypatch.setattr(matrix_runner_module, "run_timestep", original_run_timestep)
+
+    second_results, second_failures = run_matrix(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[0],
+        num_days=3,
+        dry_run=True,
+        session=session,
+        checkpoint_dir=tmp_path,
+        matrix_run_id=matrix_run_id,
+        keep_daily_results=True,
+    )
+
+    assert second_failures == []
+    # Only the previously-failed cell (master) is re-run/completed here --
+    # the other 12 were skipped as already-complete.
+    assert {r.cell_key for r in second_results} == {"master"}
+    master = second_results[0]
+    assert master.num_days_completed == 3
+    # Resumed from day 1, not re-run from day 0: only days 1 and 2 appear in
+    # this call's own daily_results (day 0 ran in the FIRST call).
+    assert len(master.daily_results) == 2
+
+    assert list(tmp_path.glob("*.pkl")) == []
+
+    # The master cell's full 3 days are all in the database (day 0 from the
+    # first call, days 1-2 from the second), scoped under one run_id.
+    master_run_id = f"{matrix_run_id}-master-seed0"
+    assert session.query(TimestepLogRecord).filter(TimestepLogRecord.run_id == master_run_id).count() == 3
