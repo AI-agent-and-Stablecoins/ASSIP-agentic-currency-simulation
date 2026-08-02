@@ -6,7 +6,7 @@ econometrics.hypothesis_datasets`) and fits it (`src.econometrics
 
 from sqlalchemy.orm import Session
 
-from src.econometrics.hypothesis_datasets import build_h1_dataset, build_h2_dataset
+from src.econometrics.hypothesis_datasets import build_h1_dataset, build_h2_dataset, build_h3_dataset
 from src.econometrics.regression_engine import RegressionResult, fit_clustered_logit
 
 
@@ -31,4 +31,16 @@ def regress_h2(session: Session) -> RegressionResult:
         regressor_col="cara_a",
         cluster_col="agent_id",
         fixed_effect_cols=["agent_type", "actual_model"],
+    )
+
+
+def regress_h3(session: Session) -> RegressionResult:
+    df = build_h3_dataset(session)
+    return fit_clustered_logit(
+        hypothesis="H3",
+        df=df,
+        dependent_col="chose_higher_governance",
+        regressor_col="cara_a",
+        cluster_col="agent_id",
+        fixed_effect_cols=["agent_type", "actual_model", "cell_key"],
     )

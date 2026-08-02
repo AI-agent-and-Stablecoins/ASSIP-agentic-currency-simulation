@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from database.models import AgentStateRecord, LLMDecisionRecord
 from src.currencies.currency import load_currency_universe
+from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
 from src.econometrics.cell_identity import cell_key_from_run_id
 from src.economy.fx_tax import currency_zone_of
 
@@ -128,5 +129,51 @@ def build_h2_dataset(session: Session) -> pd.DataFrame:
 
     df = pd.DataFrame.from_records(
         records, columns=["run_id", "timestep", "agent_id", "chose_spread_optimal", "agent_type", "actual_model"]
+    )
+    return _join_cara_a(session, df)
+
+
+_H3_SANDBOX_KEY = "liquidity_vs_governance"
+_H3_CELLS = {f"{_H3_SANDBOX_KEY}_domestic", f"{_H3_SANDBOX_KEY}_cross_border"}
+
+
+def build_h3_dataset(session: Session) -> pd.DataFrame:
+    """H3: higher CARA `a` -> prioritizes GENIUS Act compliance/governance
+    over liquidity. The `liquidity_vs_governance` sandbox (domestic +
+    cross-border pooled, with `cell_key` as a fixed effect distinguishing
+    the two -- see design spec Sec 1)."""
+    option_a, option_b = SANDBOX_CURRENCY_PAIRS[_H3_SANDBOX_KEY]
+    higher_governance_symbol = (
+        option_a.symbol if option_a.governance_score >= option_b.governance_score else option_b.symbol
+    )
+
+    decisions = (
+        session.query(LLMDecisionRecord)
+        .filter(LLMDecisionRecord.action.in_(_DECIDED_ACTIONS))
+        .all()
+    )
+
+    records = []
+    for decision in decisions:
+        cell_key = cell_key_from_run_id(decision.simulation_id)
+        if cell_key not in _H3_CELLS:
+            continue
+        if decision.currency not in (option_a.symbol, option_b.symbol):
+            continue
+        records.append(
+            {
+                "run_id": decision.simulation_id,
+                "timestep": decision.timestep,
+                "agent_id": decision.agent_id,
+                "chose_higher_governance": 1 if decision.currency == higher_governance_symbol else 0,
+                "agent_type": decision.agent_type,
+                "actual_model": decision.actual_model,
+                "cell_key": cell_key,
+            }
+        )
+
+    df = pd.DataFrame.from_records(
+        records,
+        columns=["run_id", "timestep", "agent_id", "chose_higher_governance", "agent_type", "actual_model", "cell_key"],
     )
     return _join_cara_a(session, df)
