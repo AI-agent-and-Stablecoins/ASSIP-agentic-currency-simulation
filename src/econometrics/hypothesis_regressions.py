@@ -6,7 +6,7 @@ econometrics.hypothesis_datasets`) and fits it (`src.econometrics
 
 from sqlalchemy.orm import Session
 
-from src.econometrics.hypothesis_datasets import build_h1_dataset
+from src.econometrics.hypothesis_datasets import build_h1_dataset, build_h2_dataset
 from src.econometrics.regression_engine import RegressionResult, fit_clustered_logit
 
 
@@ -16,6 +16,18 @@ def regress_h1(session: Session) -> RegressionResult:
         hypothesis="H1",
         df=df,
         dependent_col="chose_usd_zone",
+        regressor_col="cara_a",
+        cluster_col="agent_id",
+        fixed_effect_cols=["agent_type", "actual_model"],
+    )
+
+
+def regress_h2(session: Session) -> RegressionResult:
+    df = build_h2_dataset(session)
+    return fit_clustered_logit(
+        hypothesis="H2",
+        df=df,
+        dependent_col="chose_spread_optimal",
         regressor_col="cara_a",
         cluster_col="agent_id",
         fixed_effect_cols=["agent_type", "actual_model"],

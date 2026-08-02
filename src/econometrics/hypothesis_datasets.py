@@ -84,3 +84,49 @@ def build_h1_dataset(session: Session) -> pd.DataFrame:
         records, columns=["run_id", "timestep", "agent_id", "chose_usd_zone", "agent_type", "actual_model"]
     )
     return _join_cara_a(session, df)
+
+
+def build_h2_dataset(session: Session) -> pd.DataFrame:
+    """H2: higher CARA `a` -> prioritizes low spread (liquidity_score, the
+    codebase's spread proxy) over low gas fees. Master cell only. Keeps
+    only decisions where the round's spread-optimal and gas-optimal
+    candidates DIFFERED (a genuine tradeoff existed) AND the agent's
+    actual choice matches one of those two candidates -- per the design
+    spec Sec 2's resolved tradeoff-sample design.
+    """
+    decisions = (
+        session.query(LLMDecisionRecord)
+        .filter(
+            LLMDecisionRecord.action.in_(_DECIDED_ACTIONS),
+            LLMDecisionRecord.spread_optimal_currency.isnot(None),
+            LLMDecisionRecord.spread_optimal_currency != "",
+        )
+        .all()
+    )
+
+    records = []
+    for decision in decisions:
+        if cell_key_from_run_id(decision.simulation_id) != "master":
+            continue
+        spread_optimal = (decision.spread_optimal_currency, decision.spread_optimal_chain)
+        gas_optimal = (decision.gas_optimal_currency, decision.gas_optimal_chain)
+        if spread_optimal == gas_optimal:
+            continue  # no genuine tradeoff this round
+        chosen = (decision.currency, decision.chain)
+        if chosen not in (spread_optimal, gas_optimal):
+            continue  # chose neither optimal option -- ambiguous, excluded
+        records.append(
+            {
+                "run_id": decision.simulation_id,
+                "timestep": decision.timestep,
+                "agent_id": decision.agent_id,
+                "chose_spread_optimal": 1 if chosen == spread_optimal else 0,
+                "agent_type": decision.agent_type,
+                "actual_model": decision.actual_model,
+            }
+        )
+
+    df = pd.DataFrame.from_records(
+        records, columns=["run_id", "timestep", "agent_id", "chose_spread_optimal", "agent_type", "actual_model"]
+    )
+    return _join_cara_a(session, df)
