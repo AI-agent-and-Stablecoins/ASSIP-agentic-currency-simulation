@@ -9,7 +9,7 @@ regressor design this implements.
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from database.models import AgentStateRecord, LLMDecisionRecord
+from database.models import AgentStateRecord, InterventionLogRecord, LLMDecisionRecord
 from src.currencies.currency import load_currency_universe
 from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
 from src.econometrics.cell_identity import cell_key_from_run_id
@@ -177,3 +177,81 @@ def build_h3_dataset(session: Session) -> pd.DataFrame:
         columns=["run_id", "timestep", "agent_id", "chose_higher_governance", "agent_type", "actual_model", "cell_key"],
     )
     return _join_cara_a(session, df)
+
+
+_H4_SANDBOX_KEYS = ("asset_backing_vs_liquidity", "asset_backing_vs_stability")
+_H4_CELLS = {f"{key}_{suffix}" for key in _H4_SANDBOX_KEYS for suffix in ("domestic", "cross_border")}
+_H4_PROXIMITY_SHOCK_TYPES = ("crisis_warning", "depeg_event")
+
+
+def _signed_proximity(timestep: int, event_days: list[int]) -> int:
+    """Signed distance (in days) from `timestep` to the nearest crisis_
+    warning/depeg_event day for this run: negative = approaching (before
+    the event), positive = past (after it)."""
+    nearest = min(event_days, key=lambda day: abs(day - timestep))
+    return timestep - nearest
+
+
+def build_h4_dataset(session: Session) -> pd.DataFrame:
+    """H4: closer crisis/depeg proximity -> stronger shift to gold-backed
+    tokens. The two sandboxes with a gold option (asset_backing_vs_
+    liquidity, asset_backing_vs_stability), domestic + cross-border
+    pooled with `cell_key` as a fixed effect. `proximity_days` is signed
+    (negative = approaching, positive = past the nearest crisis_warning/
+    depeg_event) -- see design spec Sec 0's continuous-proximity decision.
+    """
+    gold_symbols = {
+        cfg.symbol
+        for sandbox_key in _H4_SANDBOX_KEYS
+        for cfg in SANDBOX_CURRENCY_PAIRS[sandbox_key]
+        if cfg.peg == "XAU"
+    }
+
+    decisions = (
+        session.query(LLMDecisionRecord)
+        .filter(LLMDecisionRecord.action.in_(_DECIDED_ACTIONS))
+        .all()
+    )
+
+    relevant_run_ids = {
+        decision.simulation_id
+        for decision in decisions
+        if cell_key_from_run_id(decision.simulation_id) in _H4_CELLS
+    }
+    if not relevant_run_ids:
+        return pd.DataFrame(columns=["agent_id", "chose_gold", "proximity_days", "agent_type", "actual_model", "cell_key"])
+
+    intervention_rows = (
+        session.query(InterventionLogRecord.run_id, InterventionLogRecord.timestep)
+        .filter(
+            InterventionLogRecord.run_id.in_(relevant_run_ids),
+            InterventionLogRecord.shock_type.in_(_H4_PROXIMITY_SHOCK_TYPES),
+        )
+        .all()
+    )
+    event_days_by_run: dict[str, list[int]] = {}
+    for run_id, timestep in intervention_rows:
+        event_days_by_run.setdefault(run_id, []).append(timestep)
+
+    records = []
+    for decision in decisions:
+        cell_key = cell_key_from_run_id(decision.simulation_id)
+        if cell_key not in _H4_CELLS:
+            continue
+        event_days = event_days_by_run.get(decision.simulation_id)
+        if not event_days:
+            continue  # this cell/seed's data has no crisis/depeg event at all -- no proximity to measure
+        records.append(
+            {
+                "agent_id": decision.agent_id,
+                "chose_gold": 1 if decision.currency in gold_symbols else 0,
+                "proximity_days": _signed_proximity(decision.timestep, event_days),
+                "agent_type": decision.agent_type,
+                "actual_model": decision.actual_model,
+                "cell_key": cell_key,
+            }
+        )
+
+    return pd.DataFrame.from_records(
+        records, columns=["agent_id", "chose_gold", "proximity_days", "agent_type", "actual_model", "cell_key"]
+    )
