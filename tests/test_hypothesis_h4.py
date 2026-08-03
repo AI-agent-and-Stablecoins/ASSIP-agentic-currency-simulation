@@ -1,6 +1,5 @@
 from datetime import datetime, timezone
 
-import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -98,6 +97,19 @@ def test_build_h4_dataset_only_includes_gold_backed_sandboxes():
             _decision(run_id, 130, "agent-2", _LIQUIDITY_STABLE.symbol),
         ]
     )
+    # Eligible: asset_backing_vs_stability_domestic, exercising the OTHER
+    # sandbox pair's gold detection (both pairs share one gold_symbols
+    # comprehension in build_h4_dataset -- this confirms it isn't
+    # accidentally scoped to just the liquidity pair).
+    stability_run_id = "matrix1-asset_backing_vs_stability_domestic-seed0"
+    session.add_all(
+        [
+            _shock(stability_run_id, 110, "crisis_warning"),
+            _shock(stability_run_id, 120, "depeg_event"),
+            _decision(stability_run_id, 108, "agent-5", _STABILITY_GOLD.symbol),
+            _decision(stability_run_id, 122, "agent-6", _STABILITY_STABLE.symbol),
+        ]
+    )
     # Ineligible: master cell (not one of H4's 4 sandboxes) -- must be excluded.
     master_run_id = "matrix1-master-seed0"
     session.add_all(
@@ -117,10 +129,10 @@ def test_build_h4_dataset_only_includes_gold_backed_sandboxes():
     assert set(df.columns) >= {
         "agent_id", "chose_gold", "proximity_days", "agent_type", "actual_model", "cell_key",
     }
-    # Only the 2 eligible decisions from the eligible run survive.
-    assert len(df) == 2
-    assert set(df["cell_key"]) == {"asset_backing_vs_liquidity_domestic"}
-    assert set(df["agent_id"]) == {"agent-1", "agent-2"}
+    # Only the 4 eligible decisions from the two eligible runs survive.
+    assert len(df) == 4
+    assert set(df["cell_key"]) == {"asset_backing_vs_liquidity_domestic", "asset_backing_vs_stability_domestic"}
+    assert set(df["agent_id"]) == {"agent-1", "agent-2", "agent-5", "agent-6"}
 
     approaching = df[df["agent_id"] == "agent-1"].iloc[0]
     assert approaching["chose_gold"] == 1
@@ -129,6 +141,14 @@ def test_build_h4_dataset_only_includes_gold_backed_sandboxes():
     past = df[df["agent_id"] == "agent-2"].iloc[0]
     assert past["chose_gold"] == 0
     assert past["proximity_days"] == 130 - 120  # signed, positive = past (nearest event is the depeg at 120)
+
+    stability_approaching = df[df["agent_id"] == "agent-5"].iloc[0]
+    assert stability_approaching["chose_gold"] == 1  # stability pair's gold option correctly detected
+    assert stability_approaching["proximity_days"] == 108 - 110
+
+    stability_past = df[df["agent_id"] == "agent-6"].iloc[0]
+    assert stability_past["chose_gold"] == 0  # stability pair's non-gold option correctly detected
+    assert stability_past["proximity_days"] == 122 - 120
 
 
 def test_regress_h4_returns_a_regression_result():
