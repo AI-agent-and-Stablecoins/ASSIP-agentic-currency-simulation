@@ -9,7 +9,7 @@ regressor design this implements.
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from database.models import AgentStateRecord, InterventionLogRecord, LLMDecisionRecord
+from database.models import AgentRecord, AgentStateRecord, InterventionLogRecord, LLMDecisionRecord, TimestepLogRecord
 from src.currencies.currency import load_currency_universe
 from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
 from src.econometrics.cell_identity import cell_key_from_run_id
@@ -254,4 +254,84 @@ def build_h4_dataset(session: Session) -> pd.DataFrame:
 
     return pd.DataFrame.from_records(
         records, columns=["agent_id", "chose_gold", "proximity_days", "agent_type", "actual_model", "cell_key"]
+    )
+
+
+_H5_VOLATILITY_WINDOW_DAYS = 30  # trailing window for realized EUR/USD volatility -- see design spec Sec 1
+
+
+def _rolling_volatility(rates_by_day: dict[int, float], day: int, window: int) -> float | None:
+    """Sample standard deviation of `eur_usd_exchange_rate` over the
+    `window` days up to and including `day`. Returns None if fewer than 2
+    days of history exist yet (std of a single point is undefined)."""
+    window_days = [d for d in rates_by_day if day - window < d <= day]
+    if len(window_days) < 2:
+        return None
+    values = pd.Series([rates_by_day[d] for d in window_days])
+    return float(values.std(ddof=1))
+
+
+def build_h5_dataset(session: Session) -> pd.DataFrame:
+    """H5: higher EUR/USD volatility -> stronger preference for USD-zone
+    stablecoins in cross-border settlement. Master cell only, filtered to
+    decisions by an agent whose OWN currency_zone differs from at least
+    one plausible counterparty's (master's pairing is zone-agnostic, so
+    cross-zone pairs occur naturally in a 50/50 USD/EUR population) --
+    approximated here as: the deciding agent's currency_zone is set (not
+    None, i.e. not a legacy count-based agent), since `LLMDecisionRecord`
+    does not persist the counterparty's zone directly (see design spec
+    Sec 1 -- same underlying gap as H1's zone lookup)."""
+    currencies = load_currency_universe()
+
+    decisions = (
+        session.query(LLMDecisionRecord)
+        .filter(LLMDecisionRecord.action.in_(_DECIDED_ACTIONS))
+        .all()
+    )
+    master_decisions = [d for d in decisions if cell_key_from_run_id(d.simulation_id) == "master"]
+    if not master_decisions:
+        return pd.DataFrame(columns=["agent_id", "chose_usd_zone", "eur_usd_volatility", "agent_type", "actual_model"])
+
+    run_ids = {d.simulation_id for d in master_decisions}
+    agent_ids = {d.agent_id for d in master_decisions}
+    agent_zones = dict(
+        session.query(AgentRecord.id, AgentRecord.currency_zone).filter(AgentRecord.id.in_(agent_ids)).all()
+    )
+
+    timestep_rows = (
+        session.query(TimestepLogRecord.run_id, TimestepLogRecord.timestep, TimestepLogRecord.eur_usd_exchange_rate)
+        .filter(TimestepLogRecord.run_id.in_(run_ids))
+        .all()
+    )
+    rates_by_run: dict[str, dict[int, float]] = {}
+    for run_id, timestep, rate in timestep_rows:
+        rates_by_run.setdefault(run_id, {})[timestep] = rate
+
+    records = []
+    for decision in master_decisions:
+        if agent_zones.get(decision.agent_id) is None:
+            continue  # legacy count-based agent, no zone -- excluded
+        currency = currencies.get(decision.currency)
+        if currency is None:
+            continue
+        zone = currency_zone_of(currency)
+        if zone is None:
+            continue
+        volatility = _rolling_volatility(
+            rates_by_run.get(decision.simulation_id, {}), decision.timestep, _H5_VOLATILITY_WINDOW_DAYS
+        )
+        if volatility is None:
+            continue
+        records.append(
+            {
+                "agent_id": decision.agent_id,
+                "chose_usd_zone": 1 if zone == "USD" else 0,
+                "eur_usd_volatility": volatility,
+                "agent_type": decision.agent_type,
+                "actual_model": decision.actual_model,
+            }
+        )
+
+    return pd.DataFrame.from_records(
+        records, columns=["agent_id", "chose_usd_zone", "eur_usd_volatility", "agent_type", "actual_model"]
     )

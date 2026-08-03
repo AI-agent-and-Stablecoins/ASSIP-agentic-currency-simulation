@@ -11,6 +11,7 @@ from src.econometrics.hypothesis_datasets import (
     build_h2_dataset,
     build_h3_dataset,
     build_h4_dataset,
+    build_h5_dataset,
 )
 from src.econometrics.regression_engine import RegressionResult, fit_clustered_logit
 
@@ -60,4 +61,16 @@ def regress_h4(session: Session) -> RegressionResult:
         regressor_col="proximity_days",
         cluster_col="agent_id",
         fixed_effect_cols=["agent_type", "actual_model", "cell_key"],
+    )
+
+
+def regress_h5(session: Session) -> RegressionResult:
+    df = build_h5_dataset(session)
+    return fit_clustered_logit(
+        hypothesis="H5",
+        df=df,
+        dependent_col="chose_usd_zone",
+        regressor_col="eur_usd_volatility",
+        cluster_col="agent_id",
+        fixed_effect_cols=["agent_type", "actual_model"],
     )
