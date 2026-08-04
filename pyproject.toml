@@ -20,6 +20,8 @@ market-data = ["requests>=2.31"]
 # Phase 2: OpenRouter (src/llm/llm_router.py) and Polygon
 # (src/llm/market_intelligence.py) both go over HTTP via httpx.
 llm = ["httpx>=0.27"]
+# Phase 3 Plan 5: the H1-H5 hypothesis regression engine (src/econometrics/).
+econometrics = ["statsmodels>=0.14"]
 
 [dependency-groups]
 dev = [

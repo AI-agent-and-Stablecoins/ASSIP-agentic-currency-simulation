@@ -141,6 +141,10 @@ class LLMDecisionRecord(Base):
     scenario: Mapped[str] = mapped_column(String)
     domestic_or_cross_border: Mapped[str] = mapped_column(String)
     governance_prompt_enabled: Mapped[bool] = mapped_column(Boolean)
+    spread_optimal_currency: Mapped[str | None] = mapped_column(String, nullable=True)
+    spread_optimal_chain: Mapped[str | None] = mapped_column(String, nullable=True)
+    gas_optimal_currency: Mapped[str | None] = mapped_column(String, nullable=True)
+    gas_optimal_chain: Mapped[str | None] = mapped_column(String, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime)
 
 
