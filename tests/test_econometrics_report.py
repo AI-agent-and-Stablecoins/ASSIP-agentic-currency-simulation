@@ -48,11 +48,32 @@ def test_run_all_hypotheses_returns_one_result_per_hypothesis():
         results = run_all_hypotheses(session)
 
         for mock in (m1, m2, m3, m4, m5):
-            mock.assert_called_once_with(session)
+            mock.assert_called_once_with(session, matrix_run_id=None)
 
     assert len(results) == 5
     assert {r.hypothesis for r in results} == {"H1", "H2", "H3", "H4", "H5"}
     assert all(isinstance(r, RegressionResult) for r in results)
+
+
+def test_run_all_hypotheses_threads_matrix_run_id_to_every_hypothesis():
+    """Plan 5 whole-branch review Fix C3, closing the gap the first review
+    pass missed: run_all_hypotheses is the one production entry point the
+    real report is expected to call, so an explicit matrix_run_id must
+    reach every regress_hN -- not just the individual build_hN_dataset/
+    regress_hN functions in isolation."""
+    fake_results = {h: _fake_result(h) for h in ("H1", "H2", "H3", "H4", "H5")}
+    with (
+        patch("src.econometrics.report.regress_h1", return_value=fake_results["H1"]) as m1,
+        patch("src.econometrics.report.regress_h2", return_value=fake_results["H2"]) as m2,
+        patch("src.econometrics.report.regress_h3", return_value=fake_results["H3"]) as m3,
+        patch("src.econometrics.report.regress_h4", return_value=fake_results["H4"]) as m4,
+        patch("src.econometrics.report.regress_h5", return_value=fake_results["H5"]) as m5,
+    ):
+        session = object()
+        run_all_hypotheses(session, matrix_run_id="phase3-real-run-2026-08-04")
+
+        for mock in (m1, m2, m3, m4, m5):
+            mock.assert_called_once_with(session, matrix_run_id="phase3-real-run-2026-08-04")
 
 
 def test_results_to_dataframe_has_the_required_publication_columns():

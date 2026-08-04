@@ -377,10 +377,18 @@ def build_h5_dataset(session: Session, matrix_run_id: str | None = None) -> pd.D
     if not master_decisions:
         return pd.DataFrame(columns=["agent_id", "chose_usd_zone", "eur_usd_volatility", "agent_type", "actual_model"])
 
-    negotiation_ids = {d.negotiation_id for d in master_decisions if d.negotiation_id is not None}
+    # Scoped by simulation_id (at most a handful of run_ids), NOT by
+    # negotiation_id (Plan 5 whole-branch review, second pass): at real
+    # scale a single master run can have tens of thousands of negotiations
+    # -- an IN clause with one bound parameter per negotiation_id blows
+    # past SQLite's SQLITE_MAX_VARIABLE_NUMBER (32766) and crashes with
+    # "too many SQL variables" (reproduced directly). Querying by run_id
+    # first and grouping by negotiation_id in Python afterward gets the
+    # exact same result set without binding one parameter per negotiation.
+    run_ids = {d.simulation_id for d in master_decisions}
     neg_participants = (
         session.query(LLMDecisionRecord.negotiation_id, LLMDecisionRecord.agent_id)
-        .filter(LLMDecisionRecord.negotiation_id.in_(negotiation_ids))
+        .filter(LLMDecisionRecord.simulation_id.in_(run_ids), LLMDecisionRecord.negotiation_id.isnot(None))
         .all()
     )
     agents_by_negotiation: dict[str, set[str]] = {}
@@ -398,7 +406,6 @@ def build_h5_dataset(session: Session, matrix_run_id: str | None = None) -> pd.D
         if len(zones) >= 2:
             cross_zone_negotiations.add(neg_id)
 
-    run_ids = {d.simulation_id for d in master_decisions}
     timestep_rows = (
         session.query(TimestepLogRecord.run_id, TimestepLogRecord.timestep, TimestepLogRecord.eur_usd_exchange_rate)
         .filter(TimestepLogRecord.run_id.in_(run_ids))

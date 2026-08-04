@@ -12,7 +12,7 @@ from src.econometrics.hypothesis_regressions import regress_h1, regress_h2, regr
 from src.econometrics.regression_engine import RegressionResult
 
 
-def run_all_hypotheses(session: Session) -> list[RegressionResult]:
+def run_all_hypotheses(session: Session, matrix_run_id: str | None = None) -> list[RegressionResult]:
     """Runs every in-scope hypothesis's regression against `session`'s
     already-persisted matrix-runner data. Each hypothesis's own dataset
     builder independently filters to its own relevant cell(s) -- a
@@ -20,13 +20,22 @@ def run_all_hypotheses(session: Session) -> list[RegressionResult]:
     `fit_clustered_logit` rather than silently omitting itself, so a
     misconfigured run surfaces loudly instead of shipping a report
     missing a hypothesis with no explanation.
+
+    `matrix_run_id`, if given, scopes every hypothesis to one `run_matrix`
+    invocation (Plan 5 whole-branch review Fix C3) -- without it, a
+    database holding more than one `run_matrix` call (e.g. a dry-run smoke
+    test followed by the real run) silently pools all of them together.
+    This is the one production entry point the eventual real report is
+    expected to call, so it must thread the same scoping every `build_
+    hN_dataset`/`regress_hN` already supports, not just those functions
+    in isolation.
     """
     return [
-        regress_h1(session),
-        regress_h2(session),
-        regress_h3(session),
-        regress_h4(session),
-        regress_h5(session),
+        regress_h1(session, matrix_run_id=matrix_run_id),
+        regress_h2(session, matrix_run_id=matrix_run_id),
+        regress_h3(session, matrix_run_id=matrix_run_id),
+        regress_h4(session, matrix_run_id=matrix_run_id),
+        regress_h5(session, matrix_run_id=matrix_run_id),
     ]
 
 
