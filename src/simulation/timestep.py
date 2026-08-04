@@ -37,6 +37,7 @@ from src.agents.buyer_agent import BuyerAgent
 from src.agents.seller_agent import SellerAgent
 from src.agents.wealth import advance_price_index
 from src.blockchain.routing_engine import CurrencyChainOption, generate_candidates
+from src.economy.fx_dynamics import advance_eur_usd_rate
 from src.economy.fx_tax import compute_fx_tax, load_fx_params
 from src.economy.shocks import ShockEvent, ShockType, apply_currency_shock, apply_shock
 from src.llm.decision_adapter import DecisionValidationError, NegotiationAction, adapt_decision
@@ -440,7 +441,12 @@ def run_timestep(
     fx_params = load_fx_params()
 
     # Steps 1-2: update macroeconomic state, currency attributes, and prices
-    # from any shocks due today.
+    # from any shocks due today. Ambient daily EUR/USD noise (ASSIP Plan 5
+    # whole-branch review Fix C1) is applied first, every day regardless of
+    # whether a scheduled fx_rate_shock also fires -- it models real-world
+    # day-to-day FX movement, while shocks model deliberate discrete events;
+    # the two compose multiplicatively.
+    env.macro_state = advance_eur_usd_rate(env.macro_state, day)
     due_shocks = env.event_queue.pop_due(day)
     for shock in due_shocks:
         env.event_log.record(shock)

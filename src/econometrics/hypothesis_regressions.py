@@ -16,8 +16,8 @@ from src.econometrics.hypothesis_datasets import (
 from src.econometrics.regression_engine import RegressionResult, fit_clustered_logit
 
 
-def regress_h1(session: Session) -> RegressionResult:
-    df = build_h1_dataset(session)
+def regress_h1(session: Session, matrix_run_id: str | None = None) -> RegressionResult:
+    df = build_h1_dataset(session, matrix_run_id=matrix_run_id)
     return fit_clustered_logit(
         hypothesis="H1",
         df=df,
@@ -28,8 +28,8 @@ def regress_h1(session: Session) -> RegressionResult:
     )
 
 
-def regress_h2(session: Session) -> RegressionResult:
-    df = build_h2_dataset(session)
+def regress_h2(session: Session, matrix_run_id: str | None = None) -> RegressionResult:
+    df = build_h2_dataset(session, matrix_run_id=matrix_run_id)
     return fit_clustered_logit(
         hypothesis="H2",
         df=df,
@@ -40,8 +40,8 @@ def regress_h2(session: Session) -> RegressionResult:
     )
 
 
-def regress_h3(session: Session) -> RegressionResult:
-    df = build_h3_dataset(session)
+def regress_h3(session: Session, matrix_run_id: str | None = None) -> RegressionResult:
+    df = build_h3_dataset(session, matrix_run_id=matrix_run_id)
     return fit_clustered_logit(
         hypothesis="H3",
         df=df,
@@ -52,8 +52,8 @@ def regress_h3(session: Session) -> RegressionResult:
     )
 
 
-def regress_h4(session: Session) -> RegressionResult:
-    df = build_h4_dataset(session)
+def regress_h4(session: Session, matrix_run_id: str | None = None) -> RegressionResult:
+    df = build_h4_dataset(session, matrix_run_id=matrix_run_id)
     return fit_clustered_logit(
         hypothesis="H4",
         df=df,
@@ -64,8 +64,8 @@ def regress_h4(session: Session) -> RegressionResult:
     )
 
 
-def regress_h5(session: Session) -> RegressionResult:
-    df = build_h5_dataset(session)
+def regress_h5(session: Session, matrix_run_id: str | None = None) -> RegressionResult:
+    df = build_h5_dataset(session, matrix_run_id=matrix_run_id)
     return fit_clustered_logit(
         hypothesis="H5",
         df=df,

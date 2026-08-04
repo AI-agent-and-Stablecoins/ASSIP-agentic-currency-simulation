@@ -38,14 +38,32 @@ def fit_clustered_logit(
     `cluster_col` (agent-level, per the design spec's Sec 0 decision).
     Returns `regressor_col`'s own coefficient/SE/CI/p-value plus the whole
     model's McFadden pseudo-R^2/adjusted pseudo-R^2 and sample size.
-    Raises `ValueError` if `df` is empty (a hypothesis's dataset builder
-    found no eligible decisions at all -- a real problem to surface
-    loudly, not silently return a meaningless fit for).
+    Raises `ValueError` if `df` is empty, if `dependent_col` has fewer than
+    2 distinct values, or if `regressor_col` has fewer than 2 distinct
+    values (Plan 5 whole-branch review Fix I4). A hypothesis's dataset
+    builder finding no eligible decisions, or finding decisions that never
+    vary on the outcome/regressor, is a real problem to surface loudly --
+    left unguarded, a constant dependent variable drives `result.llnull`
+    to 0 and `adjusted_pseudo_r2`/`pseudo_r2` silently become `inf`/`nan`
+    (confirmed by direct testing) rather than raising, and a constant
+    regressor/design-matrix column can raise an opaque `numpy.linalg
+    .LinAlgError: Singular matrix` deep inside statsmodels instead of a
+    clear, hypothesis-scoped message.
     """
     if df.empty:
         raise ValueError(
             f"fit_clustered_logit({hypothesis!r}): received an empty DataFrame -- "
             "the dataset builder found no eligible decisions for this hypothesis."
+        )
+    if df[dependent_col].nunique() < 2:
+        raise ValueError(
+            f"fit_clustered_logit({hypothesis!r}): {dependent_col!r} has no variation "
+            f"(all {df[dependent_col].iloc[0]!r}) -- cannot fit a logistic regression on a constant outcome."
+        )
+    if df[regressor_col].nunique() < 2:
+        raise ValueError(
+            f"fit_clustered_logit({hypothesis!r}): {regressor_col!r} has no variation "
+            f"(all {df[regressor_col].iloc[0]!r}) -- cannot estimate its coefficient against a constant regressor."
         )
 
     y = df[dependent_col].astype(float)

@@ -11,9 +11,9 @@ from src.econometrics.regression_engine import RegressionResult
 
 # Driving this hypothesis's test through a real run_matrix(...) call (as
 # H1-H3's tests do) is prohibitively slow here: H4 needs num_days > 120 for
-# the crisis_warning/depeg_event pair to fire at all, and pooling 4 cells
+# the crisis_warning/depeg_event pair to fire at all, and pooling cells
 # with genuine chose_gold variation (per H3's precedent) needs several such
-# calls -- each simulating all 13 matrix cells, not just H4's 4 -- measured
+# calls -- each simulating all 13 matrix cells, not just H4's cells -- measured
 # at tens of minutes per call. build_h4_dataset/regress_h4 have no
 # dependency on live LLM/Environment state (they only read persisted
 # LLMDecisionRecord/InterventionLogRecord rows), so this test constructs
@@ -67,12 +67,14 @@ def _decision(
     )
 
 
-def _shock(run_id: str, timestep: int, shock_type: str) -> InterventionLogRecord:
+def _shock(
+    run_id: str, timestep: int, shock_type: str, target_currency: str | None = None
+) -> InterventionLogRecord:
     return InterventionLogRecord(
         run_id=run_id,
         timestep=timestep,
         shock_type=shock_type,
-        target_currency=None,
+        target_currency=target_currency,
         target_issuer=None,
         magnitude=0.1,
     )
@@ -82,12 +84,13 @@ _LIQUIDITY_GOLD, _LIQUIDITY_STABLE = SANDBOX_CURRENCY_PAIRS["asset_backing_vs_li
 _STABILITY_GOLD, _STABILITY_STABLE = SANDBOX_CURRENCY_PAIRS["asset_backing_vs_stability"]
 
 
-def test_build_h4_dataset_only_includes_gold_backed_sandboxes():
+def test_build_h4_dataset_includes_gold_sandboxes_and_master():
     session = _session()
 
     # Eligible: asset_backing_vs_liquidity_domestic, with a crisis/depeg
     # pair at day 110/120 -- one decision approaching (day 105, gold) and
-    # one past (day 130, non-gold).
+    # one past (day 130, non-gold). proximity_days is unsigned (Fix C4):
+    # both cases report a positive distance.
     run_id = "matrix1-asset_backing_vs_liquidity_domestic-seed0"
     session.add_all(
         [
@@ -110,12 +113,16 @@ def test_build_h4_dataset_only_includes_gold_backed_sandboxes():
             _decision(stability_run_id, 122, "agent-6", _STABILITY_STABLE.symbol),
         ]
     )
-    # Ineligible: master cell (not one of H4's 4 sandboxes) -- must be excluded.
+    # Eligible (Fix C4): master cell is now included per the design spec's
+    # own requirement ("plus master's own H4 sweep instances"). Uses the
+    # REAL universe's gold-backed symbols (PAXG/XAUT), not the sandbox
+    # pairs' synthetic ones.
     master_run_id = "matrix1-master-seed0"
     session.add_all(
         [
-            _shock(master_run_id, 110, "crisis_warning"),
-            _decision(master_run_id, 105, "agent-3", "USDC"),
+            _shock(master_run_id, 110, "crisis_warning", target_currency="USDT"),
+            _shock(master_run_id, 120, "depeg_event", target_currency="USDT"),
+            _decision(master_run_id, 112, "agent-7", "PAXG"),
         ]
     )
     # Ineligible: an asset_backing_vs_stability_cross_border run with NO
@@ -129,34 +136,62 @@ def test_build_h4_dataset_only_includes_gold_backed_sandboxes():
     assert set(df.columns) >= {
         "agent_id", "chose_gold", "proximity_days", "agent_type", "actual_model", "cell_key",
     }
-    # Only the 4 eligible decisions from the two eligible runs survive.
-    assert len(df) == 4
-    assert set(df["cell_key"]) == {"asset_backing_vs_liquidity_domestic", "asset_backing_vs_stability_domestic"}
-    assert set(df["agent_id"]) == {"agent-1", "agent-2", "agent-5", "agent-6"}
+    assert len(df) == 5
+    assert set(df["cell_key"]) == {
+        "asset_backing_vs_liquidity_domestic", "asset_backing_vs_stability_domestic", "master",
+    }
+    assert set(df["agent_id"]) == {"agent-1", "agent-2", "agent-5", "agent-6", "agent-7"}
 
     approaching = df[df["agent_id"] == "agent-1"].iloc[0]
     assert approaching["chose_gold"] == 1
-    assert approaching["proximity_days"] == 105 - 110  # signed, negative = approaching
+    assert approaching["proximity_days"] == 5  # unsigned distance to day 110
 
     past = df[df["agent_id"] == "agent-2"].iloc[0]
     assert past["chose_gold"] == 0
-    assert past["proximity_days"] == 130 - 120  # signed, positive = past (nearest event is the depeg at 120)
+    assert past["proximity_days"] == 10  # unsigned distance to day 120 (nearest event)
 
     stability_approaching = df[df["agent_id"] == "agent-5"].iloc[0]
     assert stability_approaching["chose_gold"] == 1  # stability pair's gold option correctly detected
-    assert stability_approaching["proximity_days"] == 108 - 110
+    assert stability_approaching["proximity_days"] == 2
 
     stability_past = df[df["agent_id"] == "agent-6"].iloc[0]
     assert stability_past["chose_gold"] == 0  # stability pair's non-gold option correctly detected
-    assert stability_past["proximity_days"] == 122 - 120
+    assert stability_past["proximity_days"] == 2
+
+    master_row = df[df["agent_id"] == "agent-7"].iloc[0]
+    assert master_row["chose_gold"] == 1  # real-universe PAXG correctly detected as gold-backed
+    assert master_row["proximity_days"] == 2
+
+
+def test_build_h4_dataset_excludes_crisis_events_that_target_gold_itself():
+    """A crisis_warning/depeg_event pair that targets a GOLD-backed symbol
+    is a threat TO gold, not a "flee toward gold" trigger (Fix C4) -- it
+    must not count as a proximity anchor. Master's own H4 sweep includes
+    exactly this case (its day 300/320 pair targets PAXG itself)."""
+    session = _session()
+    run_id = "matrix1-master-seed0"
+    session.add_all(
+        [
+            _shock(run_id, 300, "crisis_warning", target_currency="PAXG"),
+            _shock(run_id, 320, "depeg_event", target_currency="PAXG"),
+            _decision(run_id, 305, "agent-1", "USDC"),
+        ]
+    )
+    session.commit()
+
+    df = build_h4_dataset(session)
+
+    # The only event in this run targets gold itself, so it's excluded --
+    # this decision has no eligible proximity anchor and must not appear.
+    assert df.empty
 
 
 def test_regress_h4_returns_a_regression_result():
     """A genuine (noisy, not perfectly separated) planted relationship:
     closer proximity to the nearest event -> more likely gold, pooled
-    across all 4 of H4's cells with real agent/model/cell_key variation,
-    so `fit_clustered_logit` has real signal without hitting the
-    exact-singularity failure mode documented for H3."""
+    across H4's cells (including master) with real agent/model/cell_key
+    variation, so `fit_clustered_logit` has real signal without hitting
+    the exact-singularity failure mode documented for H3."""
     import random
 
     rng = random.Random(0)
@@ -167,20 +202,21 @@ def test_regress_h4_returns_a_regression_result():
         ("asset_backing_vs_liquidity_cross_border", _LIQUIDITY_GOLD.symbol, _LIQUIDITY_STABLE.symbol),
         ("asset_backing_vs_stability_domestic", _STABILITY_GOLD.symbol, _STABILITY_STABLE.symbol),
         ("asset_backing_vs_stability_cross_border", _STABILITY_GOLD.symbol, _STABILITY_STABLE.symbol),
+        ("master", "PAXG", "USDC"),
     ]
 
     rows = []
     for cell_key, gold_symbol, stable_symbol in cells:
         run_id = f"matrix1-{cell_key}-seed0"
-        session.add(_shock(run_id, 110, "crisis_warning"))
-        session.add(_shock(run_id, 120, "depeg_event"))
+        session.add(_shock(run_id, 110, "crisis_warning", target_currency=None if cell_key != "master" else "USDT"))
+        session.add(_shock(run_id, 120, "depeg_event", target_currency=None if cell_key != "master" else "USDT"))
         for agent_idx in range(15):
             agent_id = f"{cell_key}-agent-{agent_idx}"
             agent_type = "consumer" if agent_idx % 2 == 0 else "bank"
             model = "vendor/model-a" if agent_idx % 3 == 0 else "vendor/model-b"
             timestep = rng.choice([90, 100, 108, 112, 118, 125, 140, 160])
-            proximity = timestep - (110 if abs(timestep - 110) <= abs(timestep - 120) else 120)
-            probability_gold = 1.0 / (1.0 + pow(2.71828, 0.15 * abs(proximity)))
+            proximity = min(abs(timestep - 110), abs(timestep - 120))
+            probability_gold = 1.0 / (1.0 + pow(2.71828, 0.15 * proximity))
             currency = gold_symbol if rng.uniform(0.0, 1.0) < probability_gold else stable_symbol
             rows.append(_decision(run_id, timestep, agent_id, currency, agent_type, model))
 

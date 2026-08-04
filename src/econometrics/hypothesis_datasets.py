@@ -15,18 +15,65 @@ from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
 from src.econometrics.cell_identity import cell_key_from_run_id
 from src.economy.fx_tax import currency_zone_of
 
-_DECIDED_ACTIONS = ("ACCEPT", "OFFER")
+# Every LLM currency-choice decision is one observation (Plan 5 whole-branch
+# review Fix I2): COUNTER_OFFER is included alongside ACCEPT/OFFER -- in a
+# multi-round run_llm_negotiation, counter-offers are the majority of
+# logged decisions after round 0 and are themselves genuine currency/chain
+# choices; excluding them shrinks N and selects on negotiation outcome
+# (only openers and terminal accepts would survive).
+_DECIDED_ACTIONS = ("ACCEPT", "OFFER", "COUNTER_OFFER")
+
+
+def _safe_cell_key(run_id: str) -> str | None:
+    """`cell_key_from_run_id` raises `ValueError` for any `run_id` not
+    produced by `run_matrix` (Plan 5 whole-branch review Fix C2) -- e.g.
+    `experiments/experiment_007_governance_prompting.py` writes
+    `LLMDecisionRecord` rows to the same default database with its own
+    `simulation_id` scheme. A foreign row sharing the database is a
+    co-tenant, not a misconfiguration, so this returns `None` instead of
+    propagating the exception; every builder below treats `None` as
+    "does not belong to any of my cells" and skips the row."""
+    try:
+        return cell_key_from_run_id(run_id)
+    except ValueError:
+        return None
+
+
+def _matches_matrix_run_id(simulation_id: str, matrix_run_id: str | None) -> bool:
+    """Scopes a dataset to one `run_matrix` invocation (Plan 5 whole-branch
+    review Fix C3): without this, two separate `run_matrix` calls against
+    the same database (e.g. a dry-run smoke test followed by the real run)
+    would silently pool together, since every builder otherwise queries
+    every `LLMDecisionRecord` row in the table regardless of which
+    `matrix_run_id` produced it. `matrix_run_id=None` (the default)
+    preserves the original pool-everything behavior for callers that
+    intentionally want it (e.g. a single-call test fixture)."""
+    return matrix_run_id is None or simulation_id.startswith(f"{matrix_run_id}-")
 
 
 def _join_cara_a(session: Session, df: pd.DataFrame) -> pd.DataFrame:
     """Joins each row's agent's CARA `a` AT THAT DECISION'S timestep from
-    `AgentStateRecord` (matched on run_id/timestep/agent_id) -- the correct
-    source per the design spec Sec 1 (NOT `LLMDecisionRecord.utility_
-    parameters`, which omits risk-neutral agents' `a=0.0` entirely).
-    `df` must already have `run_id`/`timestep`/`agent_id` columns. Rows
-    with no matching `AgentStateRecord` (shouldn't happen in practice --
-    every persisted day writes one per agent -- but defensively dropped
-    rather than silently coerced) are excluded.
+    `AgentStateRecord` -- the correct source per the design spec Sec 1 (NOT
+    `LLMDecisionRecord.utility_parameters`, which omits risk-neutral
+    agents' `a=0.0` entirely). `df` must already have `run_id`/`timestep`/
+    `agent_id` columns.
+
+    Join key is `timestep - 1` (clamped to 0), not `timestep` (Plan 5
+    whole-branch review Fix I1): `persist_full_timestep` calls `adapt_cara_
+    coefficient` BEFORE writing that day's `AgentStateRecord`
+    (`database/repository.py`), so the row at `timestep == d` holds the
+    value AFTER day `d`'s own realized-loss adaptation -- i.e. the value
+    that will be used for day `d+1`'s decisions, not the value day `d`'s
+    OWN decisions were actually made with. Day 0 is the exception: its
+    first-ever adaptation call is a no-op seed (no "before" to compare
+    against), so `AgentStateRecord.timestep==0` already holds the
+    un-adapted initial value -- exactly what day 0's decisions used --
+    which is why `max(timestep - 1, 0)` (not `timestep - 1` unclamped)
+    is correct for day 0 too.
+
+    Rows with no matching `AgentStateRecord` (shouldn't happen in
+    practice -- every persisted day writes one per agent -- but
+    defensively dropped rather than silently coerced) are excluded.
     """
     if df.empty:
         return df.assign(cara_a=pd.Series(dtype=float))
@@ -43,26 +90,32 @@ def _join_cara_a(session: Session, df: pd.DataFrame) -> pd.DataFrame:
         .all()
     )
     states_df = pd.DataFrame(states, columns=["run_id", "timestep", "agent_id", "cara_a"])
-    merged = df.merge(states_df, on=["run_id", "timestep", "agent_id"], how="left")
+
+    df = df.assign(_join_timestep=(df["timestep"] - 1).clip(lower=0))
+    merged = df.merge(
+        states_df,
+        left_on=["run_id", "_join_timestep", "agent_id"],
+        right_on=["run_id", "timestep", "agent_id"],
+        how="left",
+        suffixes=("", "_state"),
+    )
+    merged = merged.drop(columns=["_join_timestep", "timestep_state"])
     return merged.dropna(subset=["cara_a"]).reset_index(drop=True)
 
 
-def build_h1_dataset(session: Session) -> pd.DataFrame:
+def build_h1_dataset(session: Session, matrix_run_id: str | None = None) -> pd.DataFrame:
     """H1: higher CARA `a` -> stronger preference for USD-zone stablecoins
     over EUR-zone. Master cell only (the only cell with real currency-zone
     variation). Gold-backed/zone-neutral decisions (currency_zone_of
     returns None) are excluded -- H1 is a USD-vs-EUR contrast only."""
     currencies = load_currency_universe()
 
-    decisions = (
-        session.query(LLMDecisionRecord)
-        .filter(LLMDecisionRecord.action.in_(_DECIDED_ACTIONS))
-        .all()
-    )
+    query = session.query(LLMDecisionRecord).filter(LLMDecisionRecord.action.in_(_DECIDED_ACTIONS))
+    decisions = [d for d in query.all() if _matches_matrix_run_id(d.simulation_id, matrix_run_id)]
 
     records = []
     for decision in decisions:
-        if cell_key_from_run_id(decision.simulation_id) != "master":
+        if _safe_cell_key(decision.simulation_id) != "master":
             continue
         currency = currencies.get(decision.currency)
         if currency is None:
@@ -87,41 +140,60 @@ def build_h1_dataset(session: Session) -> pd.DataFrame:
     return _join_cara_a(session, df)
 
 
-def build_h2_dataset(session: Session) -> pd.DataFrame:
+def build_h2_dataset(session: Session, matrix_run_id: str | None = None) -> pd.DataFrame:
     """H2: higher CARA `a` -> prioritizes low spread (liquidity_score, the
     codebase's spread proxy) over low gas fees. Master cell only. Keeps
     only decisions where the round's spread-optimal and gas-optimal
     candidates DIFFERED (a genuine tradeoff existed) AND the agent's
-    actual choice matches one of those two candidates -- per the design
-    spec Sec 2's resolved tradeoff-sample design.
+    actual choice reveals a preference for one side or the other.
+
+    Classification is by CURRENCY (for spread) and CHAIN (for gas), not
+    exact-tuple equality (Plan 5 whole-branch review Fix I3):
+    `generate_candidates` sets `gas_fee` from the chain alone (`src/
+    blockchain/routing_engine.py`), so every currency on the cheapest
+    chain ties on gas -- `gas_optimal_currency` is therefore an arbitrary
+    tie-break, not a meaningful "gas-optimal currency." Requiring an exact
+    `(currency, chain)` match against that arbitrary tuple silently
+    misclassifies (or discards) any decision that legitimately chose the
+    gas-optimal CHAIN with a different currency than the tie-break
+    happened to pick. A decision is `chose_spread_optimal=1` only if it
+    picked the spread-optimal currency AND NOT the gas-optimal chain;
+    `=0` only if the reverse; a decision landing on both (possible under a
+    gas tie) or neither is excluded as not revealing a preference between
+    the two.
     """
-    decisions = (
-        session.query(LLMDecisionRecord)
-        .filter(
-            LLMDecisionRecord.action.in_(_DECIDED_ACTIONS),
-            LLMDecisionRecord.spread_optimal_currency.isnot(None),
-            LLMDecisionRecord.spread_optimal_currency != "",
-        )
-        .all()
+    query = session.query(LLMDecisionRecord).filter(
+        LLMDecisionRecord.action.in_(_DECIDED_ACTIONS),
+        LLMDecisionRecord.spread_optimal_currency.isnot(None),
+        LLMDecisionRecord.spread_optimal_currency != "",
     )
+    decisions = [d for d in query.all() if _matches_matrix_run_id(d.simulation_id, matrix_run_id)]
 
     records = []
     for decision in decisions:
-        if cell_key_from_run_id(decision.simulation_id) != "master":
+        if _safe_cell_key(decision.simulation_id) != "master":
             continue
-        spread_optimal = (decision.spread_optimal_currency, decision.spread_optimal_chain)
-        gas_optimal = (decision.gas_optimal_currency, decision.gas_optimal_chain)
-        if spread_optimal == gas_optimal:
+        if (
+            decision.spread_optimal_currency == decision.gas_optimal_currency
+            and decision.spread_optimal_chain == decision.gas_optimal_chain
+        ):
             continue  # no genuine tradeoff this round
-        chosen = (decision.currency, decision.chain)
-        if chosen not in (spread_optimal, gas_optimal):
-            continue  # chose neither optimal option -- ambiguous, excluded
+
+        chose_spread_currency = decision.currency == decision.spread_optimal_currency
+        chose_gas_chain = decision.chain == decision.gas_optimal_chain
+        if chose_spread_currency and not chose_gas_chain:
+            chose_spread_optimal = 1
+        elif chose_gas_chain and not chose_spread_currency:
+            chose_spread_optimal = 0
+        else:
+            continue  # picked both (possible under a gas tie) or neither -- ambiguous, excluded
+
         records.append(
             {
                 "run_id": decision.simulation_id,
                 "timestep": decision.timestep,
                 "agent_id": decision.agent_id,
-                "chose_spread_optimal": 1 if chosen == spread_optimal else 0,
+                "chose_spread_optimal": chose_spread_optimal,
                 "agent_type": decision.agent_type,
                 "actual_model": decision.actual_model,
             }
@@ -137,7 +209,7 @@ _H3_SANDBOX_KEY = "liquidity_vs_governance"
 _H3_CELLS = {f"{_H3_SANDBOX_KEY}_domestic", f"{_H3_SANDBOX_KEY}_cross_border"}
 
 
-def build_h3_dataset(session: Session) -> pd.DataFrame:
+def build_h3_dataset(session: Session, matrix_run_id: str | None = None) -> pd.DataFrame:
     """H3: higher CARA `a` -> prioritizes GENIUS Act compliance/governance
     over liquidity. The `liquidity_vs_governance` sandbox (domestic +
     cross-border pooled, with `cell_key` as a fixed effect distinguishing
@@ -147,15 +219,12 @@ def build_h3_dataset(session: Session) -> pd.DataFrame:
         option_a.symbol if option_a.governance_score >= option_b.governance_score else option_b.symbol
     )
 
-    decisions = (
-        session.query(LLMDecisionRecord)
-        .filter(LLMDecisionRecord.action.in_(_DECIDED_ACTIONS))
-        .all()
-    )
+    query = session.query(LLMDecisionRecord).filter(LLMDecisionRecord.action.in_(_DECIDED_ACTIONS))
+    decisions = [d for d in query.all() if _matches_matrix_run_id(d.simulation_id, matrix_run_id)]
 
     records = []
     for decision in decisions:
-        cell_key = cell_key_from_run_id(decision.simulation_id)
+        cell_key = _safe_cell_key(decision.simulation_id)
         if cell_key not in _H3_CELLS:
             continue
         if decision.currency not in (option_a.symbol, option_b.symbol):
@@ -180,49 +249,62 @@ def build_h3_dataset(session: Session) -> pd.DataFrame:
 
 
 _H4_SANDBOX_KEYS = ("asset_backing_vs_liquidity", "asset_backing_vs_stability")
-_H4_CELLS = {f"{key}_{suffix}" for key in _H4_SANDBOX_KEYS for suffix in ("domestic", "cross_border")}
+_H4_CELLS = {f"{key}_{suffix}" for key in _H4_SANDBOX_KEYS for suffix in ("domestic", "cross_border")} | {"master"}
 _H4_PROXIMITY_SHOCK_TYPES = ("crisis_warning", "depeg_event")
 
 
-def _signed_proximity(timestep: int, event_days: list[int]) -> int:
-    """Signed distance (in days) from `timestep` to the nearest crisis_
-    warning/depeg_event day for this run: negative = approaching (before
-    the event), positive = past (after it)."""
-    nearest = min(event_days, key=lambda day: abs(day - timestep))
-    return timestep - nearest
+def _nearest_event_distance(timestep: int, event_days: list[int]) -> int:
+    """Absolute distance (in days) from `timestep` to the nearest crisis_
+    warning/depeg_event day for this run -- unsigned (Plan 5 whole-branch
+    review Fix C4): H4 claims CLOSER proximity (smaller distance) predicts
+    a STRONGER shift to gold, a claim about magnitude, not direction. A
+    signed distance is not monotonic in "closeness" (a day equally before
+    or after the event has the same closeness but opposite sign), so it
+    cannot test this claim; the expected relationship under H4 is a
+    NEGATIVE coefficient on this distance (farther away -> less likely
+    gold)."""
+    return min(abs(day - timestep) for day in event_days)
 
 
-def build_h4_dataset(session: Session) -> pd.DataFrame:
+def build_h4_dataset(session: Session, matrix_run_id: str | None = None) -> pd.DataFrame:
     """H4: closer crisis/depeg proximity -> stronger shift to gold-backed
     tokens. The two sandboxes with a gold option (asset_backing_vs_
-    liquidity, asset_backing_vs_stability), domestic + cross-border
-    pooled with `cell_key` as a fixed effect. `proximity_days` is signed
-    (negative = approaching, positive = past the nearest crisis_warning/
-    depeg_event) -- see design spec Sec 0's continuous-proximity decision.
+    liquidity, asset_backing_vs_stability) PLUS the master cell's own H4
+    proximity sweep (Plan 5 whole-branch review Fix C4 -- design spec
+    Sec 1 requires master's sweep instances; omitting them also left the
+    remaining 4 sandbox cells sharing one identical fixed crisis-proximity
+    gap, making `proximity_days` collinear with the day index rather than
+    a genuine proximity effect). `cell_key` is a fixed effect distinguishing
+    all 5 cells. `proximity_days` is the unsigned distance to the nearest
+    eligible crisis_warning/depeg_event day (see `_nearest_event_distance`).
+
+    Crisis/depeg events that themselves TARGET a gold-backed symbol are
+    excluded from the proximity signal (Fix C4): master's own sweep
+    includes a pair targeting PAXG itself (day 300/320) -- a threat TO
+    gold is not a "flee toward gold" trigger, and counting it would give
+    exactly the wrong sign for a subset of the sample.
     """
+    real_currencies = load_currency_universe()
     gold_symbols = {
         cfg.symbol
         for sandbox_key in _H4_SANDBOX_KEYS
         for cfg in SANDBOX_CURRENCY_PAIRS[sandbox_key]
         if cfg.peg == "XAU"
-    }
+    } | {symbol for symbol, cfg in real_currencies.items() if cfg.peg == "XAU"}
 
-    decisions = (
-        session.query(LLMDecisionRecord)
-        .filter(LLMDecisionRecord.action.in_(_DECIDED_ACTIONS))
-        .all()
-    )
+    query = session.query(LLMDecisionRecord).filter(LLMDecisionRecord.action.in_(_DECIDED_ACTIONS))
+    decisions = [d for d in query.all() if _matches_matrix_run_id(d.simulation_id, matrix_run_id)]
 
     relevant_run_ids = {
-        decision.simulation_id
-        for decision in decisions
-        if cell_key_from_run_id(decision.simulation_id) in _H4_CELLS
+        decision.simulation_id for decision in decisions if _safe_cell_key(decision.simulation_id) in _H4_CELLS
     }
     if not relevant_run_ids:
         return pd.DataFrame(columns=["agent_id", "chose_gold", "proximity_days", "agent_type", "actual_model", "cell_key"])
 
     intervention_rows = (
-        session.query(InterventionLogRecord.run_id, InterventionLogRecord.timestep)
+        session.query(
+            InterventionLogRecord.run_id, InterventionLogRecord.timestep, InterventionLogRecord.target_currency
+        )
         .filter(
             InterventionLogRecord.run_id.in_(relevant_run_ids),
             InterventionLogRecord.shock_type.in_(_H4_PROXIMITY_SHOCK_TYPES),
@@ -230,22 +312,24 @@ def build_h4_dataset(session: Session) -> pd.DataFrame:
         .all()
     )
     event_days_by_run: dict[str, list[int]] = {}
-    for run_id, timestep in intervention_rows:
+    for run_id, timestep, target_currency in intervention_rows:
+        if target_currency in gold_symbols:
+            continue  # a threat TO gold itself isn't a "flee toward gold" trigger
         event_days_by_run.setdefault(run_id, []).append(timestep)
 
     records = []
     for decision in decisions:
-        cell_key = cell_key_from_run_id(decision.simulation_id)
+        cell_key = _safe_cell_key(decision.simulation_id)
         if cell_key not in _H4_CELLS:
             continue
         event_days = event_days_by_run.get(decision.simulation_id)
         if not event_days:
-            continue  # this cell/seed's data has no crisis/depeg event at all -- no proximity to measure
+            continue  # this cell/seed's data has no eligible crisis/depeg event -- no proximity to measure
         records.append(
             {
                 "agent_id": decision.agent_id,
                 "chose_gold": 1 if decision.currency in gold_symbols else 0,
-                "proximity_days": _signed_proximity(decision.timestep, event_days),
+                "proximity_days": _nearest_event_distance(decision.timestep, event_days),
                 "agent_type": decision.agent_type,
                 "actual_model": decision.actual_model,
                 "cell_key": cell_key,
@@ -271,33 +355,50 @@ def _rolling_volatility(rates_by_day: dict[int, float], day: int, window: int) -
     return float(values.std(ddof=1))
 
 
-def build_h5_dataset(session: Session) -> pd.DataFrame:
+def build_h5_dataset(session: Session, matrix_run_id: str | None = None) -> pd.DataFrame:
     """H5: higher EUR/USD volatility -> stronger preference for USD-zone
     stablecoins in cross-border settlement. Master cell only, filtered to
-    decisions by an agent whose OWN currency_zone differs from at least
-    one plausible counterparty's (master's pairing is zone-agnostic, so
-    cross-zone pairs occur naturally in a 50/50 USD/EUR population) --
-    approximated here as: the deciding agent's currency_zone is set (not
-    None, i.e. not a legacy count-based agent), since `LLMDecisionRecord`
-    does not persist the counterparty's zone directly (see design spec
-    Sec 1 -- same underlying gap as H1's zone lookup)."""
+    decisions belonging to a negotiation whose participants' `currency_
+    zone`s genuinely differ (Plan 5 whole-branch review Fix I5 -- the
+    design spec's actual requirement, implemented via `LLMDecisionRecord
+    .negotiation_id` grouping: every decision sharing a negotiation_id is
+    one negotiation's buyer/seller pair, so the SET of zones across a
+    negotiation's own decisions reveals whether it was cross-zone. This
+    replaces an earlier approximation that only checked the deciding
+    agent's own zone was set, which for a 100%-zoned Plan-3 population
+    made H5's sample identical to H1's and never actually tested
+    "cross-border" at all).
+    """
     currencies = load_currency_universe()
 
-    decisions = (
-        session.query(LLMDecisionRecord)
-        .filter(LLMDecisionRecord.action.in_(_DECIDED_ACTIONS))
-        .all()
-    )
-    master_decisions = [d for d in decisions if cell_key_from_run_id(d.simulation_id) == "master"]
+    query = session.query(LLMDecisionRecord).filter(LLMDecisionRecord.action.in_(_DECIDED_ACTIONS))
+    decisions = [d for d in query.all() if _matches_matrix_run_id(d.simulation_id, matrix_run_id)]
+    master_decisions = [d for d in decisions if _safe_cell_key(d.simulation_id) == "master"]
     if not master_decisions:
         return pd.DataFrame(columns=["agent_id", "chose_usd_zone", "eur_usd_volatility", "agent_type", "actual_model"])
 
-    run_ids = {d.simulation_id for d in master_decisions}
-    agent_ids = {d.agent_id for d in master_decisions}
+    negotiation_ids = {d.negotiation_id for d in master_decisions if d.negotiation_id is not None}
+    neg_participants = (
+        session.query(LLMDecisionRecord.negotiation_id, LLMDecisionRecord.agent_id)
+        .filter(LLMDecisionRecord.negotiation_id.in_(negotiation_ids))
+        .all()
+    )
+    agents_by_negotiation: dict[str, set[str]] = {}
+    for neg_id, agent_id in neg_participants:
+        agents_by_negotiation.setdefault(neg_id, set()).add(agent_id)
+
+    all_agent_ids = {aid for agents in agents_by_negotiation.values() for aid in agents}
     agent_zones = dict(
-        session.query(AgentRecord.id, AgentRecord.currency_zone).filter(AgentRecord.id.in_(agent_ids)).all()
+        session.query(AgentRecord.id, AgentRecord.currency_zone).filter(AgentRecord.id.in_(all_agent_ids)).all()
     )
 
+    cross_zone_negotiations = set()
+    for neg_id, agent_ids in agents_by_negotiation.items():
+        zones = {agent_zones.get(aid) for aid in agent_ids} - {None}
+        if len(zones) >= 2:
+            cross_zone_negotiations.add(neg_id)
+
+    run_ids = {d.simulation_id for d in master_decisions}
     timestep_rows = (
         session.query(TimestepLogRecord.run_id, TimestepLogRecord.timestep, TimestepLogRecord.eur_usd_exchange_rate)
         .filter(TimestepLogRecord.run_id.in_(run_ids))
@@ -309,8 +410,8 @@ def build_h5_dataset(session: Session) -> pd.DataFrame:
 
     records = []
     for decision in master_decisions:
-        if agent_zones.get(decision.agent_id) is None:
-            continue  # legacy count-based agent, no zone -- excluded
+        if decision.negotiation_id not in cross_zone_negotiations:
+            continue
         currency = currencies.get(decision.currency)
         if currency is None:
             continue

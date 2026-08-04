@@ -290,6 +290,46 @@ def test_persist_full_timestep_persists_rendered_prompt_hash_derived_from_the_pr
     assert wrong_hash not in persisted_hashes
 
 
+def test_persist_full_timestep_persists_nonempty_spread_and_gas_optimal_fields_end_to_end():
+    """Plan 5 whole-branch review Fix I8, end-to-end: runs a real use_llm
+    =True day and confirms `_spread_and_gas_optimal`'s computed values
+    (src/simulation/timestep.py) actually reach the persisted
+    `LLMDecisionRecord` rows via `persist_full_timestep` -- not just that
+    the Pydantic model/log-entry mapping/repository round-trip work in
+    isolation (already covered piecewise elsewhere), but that the full
+    `run_timestep` -> `persist_full_timestep` chain wires them together
+    correctly. A swapped spread/gas 4-tuple unpack in `timestep.py` would
+    not fail any test without this one.
+    """
+    env = Environment.build("baseline", {"consumer": 1, "merchant": 1})
+    for a in env.agents.values():
+        a.assigned_model = "test-vendor/buyer-model" if a.agent_class == "buyer" else "test-vendor/seller-model"
+
+    client = mock_openrouter_client(
+        {
+            "test-vendor/buyer-model": _decision_json(action="OFFER", price=90.0),
+            "test-vendor/seller-model": _decision_json(action="ACCEPT", price=90.0),
+        }
+    )
+    rng = random.Random(0)
+    result = run_timestep(env, day=0, rng=rng, use_llm=True, openrouter_client=client)
+    assert result.llm_decisions
+    assert all(d.spread_optimal_currency for d in result.llm_decisions)
+    assert all(d.spread_optimal_chain for d in result.llm_decisions)
+    assert all(d.gas_optimal_currency for d in result.llm_decisions)
+    assert all(d.gas_optimal_chain for d in result.llm_decisions)
+
+    session = _session()
+    persist_full_timestep(session, env, result, run_id="run-spread-gas")
+
+    decision_rows = session.query(LLMDecisionRecord).all()
+    assert decision_rows
+    assert all(row.spread_optimal_currency for row in decision_rows)
+    assert all(row.spread_optimal_chain for row in decision_rows)
+    assert all(row.gas_optimal_currency for row in decision_rows)
+    assert all(row.gas_optimal_chain for row in decision_rows)
+
+
 def test_persist_full_timestep_is_atomic_a_failure_partway_through_leaves_nothing_committed(monkeypatch):
     """Fix 2 (Important, Task 11 review): persist_full_timestep used to call
     persist_timestep (which committed on its own) and then commit again at
