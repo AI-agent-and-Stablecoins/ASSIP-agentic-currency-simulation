@@ -634,6 +634,17 @@ def run_matrix(
         create_all_tables()
         session = new_session()
 
+    # Fail fast and loud on a stale database, BEFORE the first cell/seed runs
+    # (and outside the per-cell/seed try/except below, which would otherwise
+    # swallow the eventual error into `failures` after a full day of billed
+    # LLM calls and leave a `simulation_runs` row that makes a later retry
+    # skip the cell). Applies to a caller-supplied session too -- that is the
+    # path `distributed_matrix_runner._run_cell_group` takes. See
+    # `assert_schema_current`'s docstring for the full failure mode.
+    from database.session import assert_schema_current
+
+    assert_schema_current(session.get_bind())
+
     if matrix_run_id is None:
         matrix_run_id = generate_id("matrix")
 

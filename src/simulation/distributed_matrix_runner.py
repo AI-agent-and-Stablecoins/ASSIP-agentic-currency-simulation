@@ -99,6 +99,17 @@ def _run_cell_group(
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.close()
 
+    # Checked here, not just inside `run_matrix`, so a stale database aborts
+    # this worker BEFORE the client factories below open real HTTP clients
+    # (and before any of this group's cells register themselves in
+    # `simulation_runs`). `_run_cell_group` is an independent entry point into
+    # the shared database -- it builds its own engine and never calls
+    # `create_all_tables()` -- so it needs its own guard. See
+    # `database/session.py`'s `assert_schema_current` for the failure mode.
+    from database.session import assert_schema_current
+
+    assert_schema_current(engine)
+
     session = Session(engine)
     openrouter_client = openrouter_client_factory() if openrouter_client_factory is not None else None
     polygon_client = polygon_client_factory() if polygon_client_factory is not None else None
