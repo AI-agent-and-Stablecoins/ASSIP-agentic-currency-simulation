@@ -87,11 +87,16 @@ def _run_cell_group(
 
     @event.listens_for(engine, "connect")
     def _set_pragmas(dbapi_connection, connection_record) -> None:
+        # busy_timeout FIRST, then journal_mode -- the WAL conversion itself
+        # briefly needs exclusive file access, so as the first statement on a
+        # fresh connection it could raise an uncaught "database is locked"
+        # while a sibling worker process was mid-connect. See the identical
+        # ordering (and fuller explanation) in database/session.py.
         if not database_url.startswith("sqlite"):
             return
         cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA journal_mode=WAL")
         cursor.close()
 
     session = Session(engine)
