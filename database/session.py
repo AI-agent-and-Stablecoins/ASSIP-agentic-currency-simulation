@@ -8,7 +8,7 @@ changing .env, not code.
 import os
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.utils.constants import DEFAULT_DATABASE_URL, REPO_ROOT
@@ -18,6 +18,26 @@ load_dotenv(REPO_ROOT / ".env")
 DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
 
 _engine = create_engine(DATABASE_URL, echo=False)
+
+
+@event.listens_for(_engine, "connect")
+def _set_sqlite_pragmas(dbapi_connection, connection_record) -> None:
+    """WAL mode lets concurrent OS processes write to this SQLite file
+    without one writer blocking every reader (Plan 6a: separate
+    run_matrix(cell_keys=...) processes share one database). busy_timeout
+    makes a writer that DOES contend retry for up to 30s instead of
+    immediately raising "database is locked" -- both are no-ops for a
+    non-SQLite DATABASE_URL (this listener only fires for the sqlite3
+    DB-API module, which is what dbapi_connection is when DATABASE_URL
+    points at a .db file)."""
+    if not DATABASE_URL.startswith("sqlite"):
+        return
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.close()
+
+
 SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False)
 
 
