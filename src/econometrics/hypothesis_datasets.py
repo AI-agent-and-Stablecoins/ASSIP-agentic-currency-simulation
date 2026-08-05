@@ -13,7 +13,9 @@ from sqlalchemy.orm import Session
 
 from database.models import AgentRecord, AgentStateRecord, InterventionLogRecord, LLMDecisionRecord, TimestepLogRecord
 from src.currencies.currency import CurrencyConfig, load_currency_universe
+from src.currencies.gold_token import GoldBackedConfig
 from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
+from src.currencies.tokenized_deposit import TokenizedDepositConfig
 from src.econometrics.cell_identity import cell_key_from_run_id
 from src.economy.fx_tax import currency_zone_of
 
@@ -499,3 +501,70 @@ def build_sandbox_preference_dataset(
         columns=["run_id", "timestep", "agent_id", "chose_higher_option", "agent_type", "actual_model"],
     )
     return _join_cara_a(session, df)
+
+
+def build_h6_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
+    """H6: higher CARA `a` -> prioritizes peg stability (lower peg_error)
+    over governance/compliance. governance_vs_stability sandbox."""
+    return build_sandbox_preference_dataset(
+        session,
+        sandbox_key="governance_vs_stability",
+        higher_option_selector=lambda a, b: a.symbol if a.peg_error <= b.peg_error else b.symbol,
+        cell_variant=cell_variant,
+        matrix_run_id=matrix_run_id,
+    )
+
+
+def build_h7_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
+    """H7: higher CARA `a` -> prioritizes peg stability over liquidity.
+    liquidity_vs_stability sandbox."""
+    return build_sandbox_preference_dataset(
+        session,
+        sandbox_key="liquidity_vs_stability",
+        higher_option_selector=lambda a, b: a.symbol if a.peg_error <= b.peg_error else b.symbol,
+        cell_variant=cell_variant,
+        matrix_run_id=matrix_run_id,
+    )
+
+
+def build_h8_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
+    """H8: higher CARA `a` -> prioritizes gold/hard-asset backing over
+    liquidity. asset_backing_vs_liquidity sandbox (static baseline
+    preference, not crisis-proximity-driven like H4)."""
+    return build_sandbox_preference_dataset(
+        session,
+        sandbox_key="asset_backing_vs_liquidity",
+        higher_option_selector=lambda a, b: a.symbol if isinstance(a, GoldBackedConfig) else b.symbol,
+        cell_variant=cell_variant,
+        matrix_run_id=matrix_run_id,
+    )
+
+
+def build_h9_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
+    """H9: higher CARA `a` -> prioritizes the FDIC-insured deposit option
+    (better peg + insurance) over gold backing. asset_backing_vs_stability
+    sandbox. Lower-confidence hypothesis (approved as-is, see design spec
+    Sec 1): this sandbox bundles asset-class AND a large peg_error gap
+    (0.015 vs 0.0001) in one swap."""
+    return build_sandbox_preference_dataset(
+        session,
+        sandbox_key="asset_backing_vs_stability",
+        higher_option_selector=lambda a, b: a.symbol if isinstance(a, TokenizedDepositConfig) else b.symbol,
+        cell_variant=cell_variant,
+        matrix_run_id=matrix_run_id,
+    )
+
+
+def build_h10_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
+    """H10: higher CARA `a` -> prioritizes governance/compliance quality
+    over asset-backing type. asset_backing_vs_governance sandbox.
+    Lower-confidence hypothesis (approved as-is, see design spec Sec 1):
+    the two options' governance_score (0.75 vs 0.70) and issuer_risk (0.25
+    vs 0.20) are close, a subtler contrast than the other pairs."""
+    return build_sandbox_preference_dataset(
+        session,
+        sandbox_key="asset_backing_vs_governance",
+        higher_option_selector=lambda a, b: a.symbol if a.governance_score >= b.governance_score else b.symbol,
+        cell_variant=cell_variant,
+        matrix_run_id=matrix_run_id,
+    )

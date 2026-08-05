@@ -2,8 +2,17 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from database.models import Base
+from src.currencies.gold_token import GoldBackedConfig
 from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
-from src.econometrics.hypothesis_datasets import build_sandbox_preference_dataset
+from src.currencies.tokenized_deposit import TokenizedDepositConfig
+from src.econometrics.hypothesis_datasets import (
+    build_h6_dataset,
+    build_h7_dataset,
+    build_h8_dataset,
+    build_h9_dataset,
+    build_h10_dataset,
+    build_sandbox_preference_dataset,
+)
 from src.simulation.matrix_runner import run_matrix
 
 MODEL_CANDIDATES = ["vendor/fake-model"]
@@ -91,3 +100,44 @@ def test_build_sandbox_preference_dataset_rejects_unknown_cell_variant():
         assert False, "expected ValueError"
     except ValueError as exc:
         assert "cell_variant" in str(exc)
+
+
+_H6_H10_CASES = [
+    ("governance_vs_stability", build_h6_dataset),
+    ("liquidity_vs_stability", build_h7_dataset),
+    ("asset_backing_vs_liquidity", build_h8_dataset),
+    ("asset_backing_vs_stability", build_h9_dataset),
+    ("asset_backing_vs_governance", build_h10_dataset),
+]
+
+
+def test_each_h6_h10_dataset_builder_scopes_to_its_own_sandbox_and_variant():
+    for sandbox_key, builder in _H6_H10_CASES:
+        option_a, _ = SANDBOX_CURRENCY_PAIRS[sandbox_key]
+        session = _populated_session(sandbox_key, option_a.symbol)
+
+        domestic_df = builder(session, cell_variant="domestic")
+        cross_border_df = builder(session, cell_variant="cross_border")
+
+        assert not domestic_df.empty, f"{builder.__name__} domestic was empty"
+        assert not cross_border_df.empty, f"{builder.__name__} cross_border was empty"
+        assert set(domestic_df.columns) >= {"agent_id", "chose_higher_option", "cara_a"}
+
+
+def test_h8_selector_picks_the_gold_backed_symbol():
+    option_a, option_b = SANDBOX_CURRENCY_PAIRS["asset_backing_vs_liquidity"]
+    gold_option = option_a if isinstance(option_a, GoldBackedConfig) else option_b
+    session = _populated_session("asset_backing_vs_liquidity", gold_option.symbol)
+
+    df = build_h8_dataset(session, cell_variant="domestic")
+    # Every forced-ACCEPT decision proposed the gold option -> chose_higher_option must be all 1s.
+    assert (df["chose_higher_option"] == 1).all()
+
+
+def test_h9_selector_picks_the_deposit_symbol_not_the_gold_symbol():
+    option_a, option_b = SANDBOX_CURRENCY_PAIRS["asset_backing_vs_stability"]
+    deposit_option = option_a if isinstance(option_a, TokenizedDepositConfig) else option_b
+    session = _populated_session("asset_backing_vs_stability", deposit_option.symbol)
+
+    df = build_h9_dataset(session, cell_variant="domestic")
+    assert (df["chose_higher_option"] == 1).all()
