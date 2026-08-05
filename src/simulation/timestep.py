@@ -433,6 +433,12 @@ def _process_buyer_llm_day(
             for symbol in supported_currencies
             if (profile := load_currency_profile(symbol)) is not None
         }
+        # NOTE: this is buyer-vs-seller currency-zone mismatch, known
+        # before any settlement currency is chosen -- a related but
+        # distinct concept from Task 6's FX conversion tax "cross-border"
+        # check, which will compare the settlement currency's zone
+        # against the buyer's currency_zone (computed later, once a
+        # currency is actually agreed). Do not conflate the two names.
         counterparty_cross_zone = (
             buyer.currency_zone is not None
             and seller.currency_zone is not None
@@ -467,6 +473,20 @@ def _process_buyer_llm_day(
             macro_history=macro_history,
         )
 
+        # Both closures check ACCEPT's funds validity against the buyer's
+        # wallet, never the seller's -- the buyer is always the payer, so
+        # a seller ACCEPTing a currency it doesn't itself hold is
+        # irrelevant to whether the trade is affordable.
+        #
+        # decision.price is USD-scale (the negotiation convention this
+        # fix chain established -- see d8f6568), but
+        # buyer_context.agent.wallet_balances is native currency units
+        # (used as-is for the prompt's own wallet display, which must
+        # stay untouched). Converting to USD here only affects the
+        # funds-CHECK input: without it, a gold-pegged buyer with a
+        # realistic e.g. {"PAXG": 1.0} balance would be rejected as
+        # "insufficient funds" against a ~100 USD price, since
+        # 1.0 < 100.0 even though 1.0 PAXG is worth ~2400 USD.
         buyer_wallet_balances_usd = {
             symbol: env.exchange_rates.convert(balance, symbol, "USD")
             for symbol, balance in buyer_context.agent.wallet_balances.items()
@@ -521,23 +541,58 @@ def _process_buyer_llm_day(
         if tx is None:
             continue
 
+        # Task 4's carry-forward: build_transaction_from_negotiation
+        # stubs expected_value from the negotiation's own opening
+        # offer (a negotiation anchor, not ground truth). Overwrite it
+        # with the real deterministic fair value computed above (the
+        # same listing.true_price the rule-based path already uses)
+        # before this Transaction is used for settlement,
+        # persistence, or hallucination detection.
         tx.expected_value = listing.true_price
+
+        # Task 13: build_transaction_from_negotiation stores the
+        # LLM's raw negotiated price number verbatim -- USD-scale, by
+        # the same convention the rule-based path in run_timestep's
+        # else branch uses (and that the tx.expected_value overwrite
+        # right above already relies on: listing.true_price is a USD
+        # number). settle()/validate_transaction, however, treat
+        # tx.paid_value as a literal NATIVE-UNIT amount of
+        # tx.currency_symbol. Without this conversion, any
+        # non-USD-pegged settlement currency (e.g. gold-backed
+        # PAXG/XAUT at ~2400 USD/unit) would try to debit the raw USD
+        # number's worth of *units* -- ~2400x too much -- and always
+        # fail "insufficient funds".
         tx.paid_value = env.exchange_rates.convert(tx.paid_value, "USD", tx.currency_symbol)
+
+        # Task 6: cross-border FX conversion tax -- compared against
+        # the settlement currency's zone (USD/EUR; gold-backed
+        # currencies are zone-neutral) vs. the buyer's own
+        # currency_zone (None for legacy count-based agents, which
+        # never pay this tax). Computed on the final accepted price,
+        # same as the rule-based path in run_timestep's else branch.
+        # Must run AFTER the USD->native-unit conversion above:
+        # settle() debits `tx.paid_value + tx.fx_tax_paid` together in
+        # tx.currency_symbol native units, so fx_tax_paid has to be a
+        # percentage of the same native-unit paid_value, not of the
+        # pre-conversion USD number.
         tx.fx_tax_paid = compute_fx_tax(
             tx.paid_value, env.currencies[tx.currency_symbol], buyer.currency_zone, fx_params.fx_tax_rate
         )
 
         with lock:
+            # Step 10: validate.
             validation = validate_transaction(tx, buyer.wallet, env.currencies)
             if not validation.is_valid:
                 tx.status = TransactionStatus.FAILED
                 result.transactions.append(tx)
                 continue
 
+            # Step 11: settle payment.
             settle(tx, buyer.wallet, seller.wallet)
             env.ledger.record(tx)
             result.transactions.append(tx)
 
+            # Step 12: update memory/preferences.
             success = tx.status == TransactionStatus.SETTLED
             buyer.update_memory(tx.currency_symbol, success)
             seller.update_memory(tx.currency_symbol, success)
@@ -785,7 +840,28 @@ def run_timestep(
                 if agreed_price is None:
                     continue
 
+                # Task 13: negotiate() (like the LLM path in
+                # _process_buyer_llm_day) produces a USD-scale price --
+                # true_price()/asking_price()/opening_offer_price() are
+                # all computed in USD. Convert to the settlement
+                # currency's native units before this becomes
+                # Transaction.paid_value, which settle()/
+                # validate_transaction treat as a literal native-unit
+                # amount of chosen.currency_symbol. Without this, any
+                # non-USD-pegged currency (e.g. gold-backed PAXG/XAUT)
+                # would try to debit the raw USD number's worth of
+                # *units* instead of its actual USD-equivalent worth.
                 native_paid_value = env.exchange_rates.convert(agreed_price, "USD", chosen.currency_symbol)
+
+                # Task 6: cross-border FX conversion tax (see the
+                # analogous comment in _process_buyer_llm_day for the
+                # full rationale) -- computed here on the same
+                # env.currencies[chosen.currency_symbol]/
+                # buyer.currency_zone/fx_params.fx_tax_rate inputs so
+                # both paths apply identical FX-tax semantics before
+                # settlement. Must run AFTER the USD->native-unit
+                # conversion above, for the same unit-consistency
+                # reason given in the LLM path.
                 fx_tax_paid = compute_fx_tax(
                     native_paid_value, env.currencies[chosen.currency_symbol], buyer.currency_zone, fx_params.fx_tax_rate
                 )
@@ -803,16 +879,19 @@ def run_timestep(
                     fx_tax_paid=fx_tax_paid,
                 )
 
+                # Step 10: validate.
                 validation = validate_transaction(tx, buyer.wallet, env.currencies)
                 if not validation.is_valid:
                     tx.status = TransactionStatus.FAILED
                     result.transactions.append(tx)
                     continue
 
+                # Step 11: settle payment.
                 settle(tx, buyer.wallet, seller.wallet)
                 env.ledger.record(tx)
                 result.transactions.append(tx)
 
+                # Step 12: update memory/preferences.
                 success = tx.status == TransactionStatus.SETTLED
                 buyer.update_memory(chosen.currency_symbol, success)
                 seller.update_memory(chosen.currency_symbol, success)
