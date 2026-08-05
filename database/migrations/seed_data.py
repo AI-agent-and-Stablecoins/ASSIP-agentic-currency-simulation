@@ -11,8 +11,9 @@ from database.session import get_engine, new_session
 from src.simulation.environment import Environment
 
 
-# `agents`/`wallets` are keyed `(run_id, agent_id)` (see AgentRecord's
-# docstring), so even a fixture needs a run_id. A fixed literal keeps this
+# `agents` is keyed `(run_id, id)` and `wallets` `(run_id, agent_id,
+# currency_symbol)` (see AgentRecord's docstring for why run-scoping is
+# load-bearing), so even a fixture needs a run_id. A fixed literal keeps this
 # script idempotent: re-running it upserts the same rows rather than
 # accumulating a new copy of the fixture population per invocation.
 SEED_RUN_ID = "seed-small-baseline"

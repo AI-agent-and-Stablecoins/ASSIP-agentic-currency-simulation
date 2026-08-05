@@ -204,21 +204,50 @@ class AgentRepository:
         self._sync_wallet(agent, run_id)
 
     def _sync_wallet(self, agent: BaseAgent, run_id: str) -> None:
-        """Replaces this agent's wallet mirror for `run_id` only.
+        """Merges this agent's current balances into its wallet mirror for
+        `run_id` only: currencies it already had are UPDATEd in place, newly
+        held ones INSERTed, and ones it no longer holds DELETEd.
 
-        The DELETE is scoped by `run_id` AND `agent_id`. Scoping by
+        Everything here is scoped by `run_id` AND `agent_id`. Scoping by
         `agent_id` alone (the original behavior) meant cell 2's very first
         day wiped cell 1's committed wallet rows for the same shared agent
         id, straight through all 13 cells -- last-write-wins clobbering with
-        no error to notice it by.
+        no error to notice it by. The net effect is still "replace", not
+        "append": per-day history lives in `agent_states`, and this table
+        holds only the latest snapshot.
+
+        A merge, rather than the blind delete-everything-then-reinsert this
+        used to do, because `wallets` is now keyed by its natural key
+        `(run_id, agent_id, currency_symbol)` (see `WalletRecord`) and
+        `matrix_runner` runs an entire cell/seed on ONE long-lived session.
+        A blind reinsert re-derives, every simulated day, identity keys the
+        session has already seen for rows it deleted moments earlier -- the
+        identity-map hazard that previously argued for keeping a surrogate
+        primary key here. Merging never re-derives a live identity key, so
+        the natural key is safe by construction rather than by depending on
+        how the ORM happens to synchronize a bulk DELETE with the identity
+        map. It is also strictly less write traffic: the common case (same
+        currencies, changed amounts) now emits UPDATEs instead of deleting
+        and reinserting every row of every agent every day.
         """
-        self.session.query(WalletRecord).filter(
-            WalletRecord.run_id == run_id, WalletRecord.agent_id == agent.agent_id
-        ).delete()
+        existing = {
+            row.currency_symbol: row
+            for row in self.session.query(WalletRecord)
+            .filter(WalletRecord.run_id == run_id, WalletRecord.agent_id == agent.agent_id)
+            .all()
+        }
         for symbol, balance in agent.wallet.balances.items():
-            self.session.add(
-                WalletRecord(run_id=run_id, agent_id=agent.agent_id, currency_symbol=symbol, balance=balance)
-            )
+            row = existing.pop(symbol, None)
+            if row is None:
+                self.session.add(
+                    WalletRecord(run_id=run_id, agent_id=agent.agent_id, currency_symbol=symbol, balance=balance)
+                )
+            elif row.balance != balance:
+                row.balance = balance
+        # Whatever is left in `existing` is a currency the agent held at the
+        # last sync and does not hold now.
+        for departed_row in existing.values():
+            self.session.delete(departed_row)
 
 
 class TransactionRepository:

@@ -1,4 +1,6 @@
+import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database.models import AgentRecord, Base, WalletRecord
@@ -136,3 +138,88 @@ def test_sync_wallet_still_replaces_rather_than_accumulates_within_one_run():
 
     rows = {(w.currency_symbol, w.balance) for w in session.query(WalletRecord).filter_by(run_id="run-cell-1")}
     assert rows == {("USDC", 42.0), ("DAI", 5.0)}
+
+
+def test_wallets_is_keyed_by_its_true_natural_key():
+    """`wallets` rows are "the latest known balance of ONE currency for ONE
+    agent in ONE run", so `(run_id, agent_id, currency_symbol)` IS the
+    identity of a row -- not a surrogate autoincrement id (round-2 review
+    finding I3). Declaring the natural key makes a duplicated
+    run/agent/currency triple impossible at the database level instead of
+    merely unlikely because `_sync_wallet` happens to rewrite carefully.
+    """
+    primary_key_columns = {column.name for column in WalletRecord.__table__.primary_key.columns}
+    assert primary_key_columns == {"run_id", "agent_id", "currency_symbol"}
+
+
+def test_wallets_rejects_a_duplicate_run_agent_currency_row():
+    """The guarantee the composite key buys: the same currency cannot be
+    recorded twice for one agent in one run."""
+    session = _session()
+    session.add(WalletRecord(run_id="run-cell-1", agent_id="a", currency_symbol="USDC", balance=1.0))
+    session.commit()
+
+    session.add(WalletRecord(run_id="run-cell-1", agent_id="a", currency_symbol="USDC", balance=2.0))
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+    # The same currency for a DIFFERENT run or a DIFFERENT agent is still a
+    # distinct, legal row -- the key is composite, not global.
+    session.add(WalletRecord(run_id="run-cell-2", agent_id="a", currency_symbol="USDC", balance=3.0))
+    session.add(WalletRecord(run_id="run-cell-1", agent_id="b", currency_symbol="USDC", balance=4.0))
+    session.commit()
+    assert session.query(WalletRecord).count() == 3
+
+
+def test_sync_wallet_survives_many_days_on_one_long_lived_session():
+    """The scenario that made the first implementation reach for a surrogate
+    key: `matrix_runner` uses ONE long-lived session for a whole cell/seed
+    and `_sync_wallet` rewrites the same agent's rows every simulated day, so
+    with a natural primary key each day re-derives identity keys the session
+    has already seen. Eleven days of churn -- balances changing, currencies
+    appearing and disappearing and re-appearing -- must neither raise nor
+    accumulate.
+    """
+    session = _session()
+    repo = AgentRepository(session)
+    profile = load_agent_profiles()["consumer"]
+    agent = build_agent(profile, agent_id="consumer-seed0-000")
+
+    for day in range(11):
+        # USDC persists every day (same identity key, re-derived 11 times);
+        # DAI appears and disappears on alternating days (deleted then
+        # re-inserted under an identity key the session saw two days ago) and
+        # is present again on the final, even-numbered day.
+        agent.wallet.balances = {"USDC": 100.0 + day}
+        if day % 2 == 0:
+            agent.wallet.balances["DAI"] = float(day)
+        repo.upsert_agent(agent, "run-cell-1")
+        session.commit()
+
+    rows = {(w.currency_symbol, w.balance) for w in session.query(WalletRecord).all()}
+    assert rows == {("USDC", 110.0), ("DAI", 10.0)}
+
+
+def test_sync_wallet_survives_repeated_rewrites_without_an_intervening_commit():
+    """Harsher variant of the test above: several days' worth of rewrites
+    inside ONE uncommitted unit of work. Nothing in production does this
+    today (`persist_full_timestep` commits per day), but it is the exact
+    shape that would blow up on a stale identity-map entry, so it is worth
+    pinning down rather than leaving to chance.
+    """
+    session = _session()
+    repo = AgentRepository(session)
+    profile = load_agent_profiles()["consumer"]
+    agent = build_agent(profile, agent_id="consumer-seed0-000")
+
+    agent.wallet.balances = {"USDC": 1.0}
+    repo.upsert_agent(agent, "run-cell-1")
+    agent.wallet.balances = {"USDC": 2.0, "DAI": 9.0}
+    repo.upsert_agent(agent, "run-cell-1")
+    agent.wallet.balances = {"USDC": 3.0}
+    repo.upsert_agent(agent, "run-cell-1")
+    session.commit()
+
+    rows = {(w.currency_symbol, w.balance) for w in session.query(WalletRecord).all()}
+    assert rows == {("USDC", 3.0)}

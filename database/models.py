@@ -52,26 +52,35 @@ class AgentRecord(Base):
 
 
 class WalletRecord(Base):
-    """Latest-known wallet mirror, run-scoped (see `AgentRecord`'s docstring).
+    """Latest-known wallet mirror, keyed by its natural key
+    `(run_id, agent_id, currency_symbol)`.
 
-    Keeps its surrogate autoincrement `id` primary key rather than adopting
-    the natural `(run_id, agent_id, currency_symbol)` key: `AgentRepository
-    ._sync_wallet` rewrites an agent's rows every simulated day via
-    delete-then-insert on one long-lived session, and a natural primary key
-    would make each day's re-insert collide with the just-deleted row's
-    identity in SQLAlchemy's identity map. `run_id` is what actually fixes
-    the cross-cell clobbering -- `_sync_wallet`'s DELETE is scoped to
-    `(run_id, agent_id)`, so one cell's wallet snapshot can no longer erase
-    another cell's.
+    A row here means "the latest known balance of ONE currency, for ONE
+    agent, in ONE run", so that triple IS the row's identity -- the same
+    pattern `AgentStateRecord` (`(run_id, timestep, agent_id)`) and
+    `AgentRecord` (`(run_id, id)`) already use. `run_id`'s presence in the
+    key is the load-bearing part (see `AgentRecord`'s docstring for why the
+    13-cell matrix makes agent ids collide across cells); including
+    `currency_symbol` makes a duplicated run/agent/currency triple
+    impossible at the database level rather than merely unlikely because
+    `AgentRepository._sync_wallet` happens to rewrite carefully.
+
+    An earlier revision kept a surrogate autoincrement `id` here out of
+    concern that `_sync_wallet`'s delete-then-reinsert, run every simulated
+    day on `matrix_runner`'s single long-lived per-cell session, would make
+    each day's re-insert collide with a just-deleted row's entry in
+    SQLAlchemy's identity map. `_sync_wallet` no longer deletes and
+    reinserts: it merges (UPDATE in place / INSERT new symbols / ORM-DELETE
+    departed symbols), which never re-derives an identity key that is
+    already live in the session. See that method's docstring.
     """
 
     __tablename__ = "wallets"
     __table_args__ = (ForeignKeyConstraint(["run_id", "agent_id"], ["agents.run_id", "agents.id"]),)
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id: Mapped[str] = mapped_column(String)
-    agent_id: Mapped[str] = mapped_column(String)
-    currency_symbol: Mapped[str] = mapped_column(String)
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String, primary_key=True)
+    currency_symbol: Mapped[str] = mapped_column(String, primary_key=True)
     balance: Mapped[float] = mapped_column(Float)
 
 
