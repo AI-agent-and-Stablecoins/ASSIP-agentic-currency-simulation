@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import random
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
 from pydantic import BaseModel, Field
@@ -639,6 +640,7 @@ def run_timestep(
     use_llm: bool = False,
     openrouter_client: httpx.Client | None = None,
     polygon_client: httpx.Client | None = None,
+    max_workers: int = 1,
 ) -> TimestepResult:
     """Run one simulation day.
 
@@ -673,6 +675,18 @@ def run_timestep(
     macroeconomy respectively -- rather than being rebuilt per agent or per
     buyer/good pairing, since none of `trust_ledger`/`event_log`/
     `macro_state` changes within a day once Steps 1-2 above have run.
+
+    `max_workers` (default 1, meaning fully sequential -- identical to this
+    function's original behavior) only applies when `use_llm=True`: values
+    above 1 run different buyers' `_process_buyer_llm_day` calls
+    concurrently on a `ThreadPoolExecutor`, since those calls are I/O-bound
+    (OpenRouter network requests) rather than CPU-bound. A single
+    `threading.Lock` (constructed fresh per `run_timestep` call) serializes
+    the narrow shared-state critical sections inside `_process_buyer_llm_day`
+    (settlement, ledger recording, result-list appends) -- see that
+    function's docstring for the full safety analysis. `max_workers` has no
+    effect when `use_llm=False`: the rule-based path has no network calls,
+    so there is nothing to gain from parallelizing it.
     """
     if use_llm and openrouter_client is None:
         raise ValueError("openrouter_client is required when use_llm=True")
@@ -786,22 +800,46 @@ def run_timestep(
     lock = threading.Lock()
 
     if use_llm:
-        for buyer in active_buyers:
-            _process_buyer_llm_day(
-                buyer,
-                env,
-                day,
-                fx_params,
-                live_price_snapshots,
-                currency_history,
-                macro_history,
-                openrouter_client,
-                max_negotiation_rounds,
-                agreement_tolerance,
-                concession_rate,
-                result,
-                lock,
-            )
+        if max_workers > 1:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(
+                        _process_buyer_llm_day,
+                        buyer,
+                        env,
+                        day,
+                        fx_params,
+                        live_price_snapshots,
+                        currency_history,
+                        macro_history,
+                        openrouter_client,
+                        max_negotiation_rounds,
+                        agreement_tolerance,
+                        concession_rate,
+                        result,
+                        lock,
+                    )
+                    for buyer in active_buyers
+                ]
+                for future in futures:
+                    future.result()  # re-raises any worker exception on the main thread
+        else:
+            for buyer in active_buyers:
+                _process_buyer_llm_day(
+                    buyer,
+                    env,
+                    day,
+                    fx_params,
+                    live_price_snapshots,
+                    currency_history,
+                    macro_history,
+                    openrouter_client,
+                    max_negotiation_rounds,
+                    agreement_tolerance,
+                    concession_rate,
+                    result,
+                    lock,
+                )
     else:
         for buyer in active_buyers:
             for good in env.goods:

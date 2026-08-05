@@ -90,3 +90,28 @@ def test_llm_path_produces_identical_transaction_count_before_and_after_refactor
     # Step 2); Step 4 re-runs this test after the refactor to confirm it is
     # unchanged.
     assert master_result.total_transactions == 420
+
+
+def test_max_workers_greater_than_one_produces_same_transaction_count_as_sequential():
+    """Concurrency must not change WHAT happens, only how fast -- same
+    fixed seed/mock decision, sequential vs max_workers=4, must agree on
+    total transaction count (order of dict/list entries may differ, but
+    counts must not)."""
+    def _run(max_workers):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        session = Session(engine)
+        results, failures = run_matrix(
+            model_candidates=["vendor/fake-model"],
+            seeds=[0],
+            num_days=3,
+            dry_run=True,
+            exercise_llm_path=True,
+            session=session,
+            keep_daily_results=True,
+            llm_max_workers=max_workers,
+        )
+        assert failures == []
+        return next(r for r in results if r.cell_key == "master").total_transactions
+
+    assert _run(max_workers=1) == _run(max_workers=8)
