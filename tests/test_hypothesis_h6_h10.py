@@ -13,6 +13,14 @@ from src.econometrics.hypothesis_datasets import (
     build_h10_dataset,
     build_sandbox_preference_dataset,
 )
+from src.econometrics.hypothesis_regressions import (
+    regress_h6,
+    regress_h7,
+    regress_h8,
+    regress_h9,
+    regress_h10,
+)
+from src.econometrics.regression_engine import RegressionResult
 from src.simulation.matrix_runner import run_matrix
 
 MODEL_CANDIDATES = ["vendor/fake-model"]
@@ -141,3 +149,57 @@ def test_h9_selector_picks_the_deposit_symbol_not_the_gold_symbol():
 
     df = build_h9_dataset(session, cell_variant="domestic")
     assert (df["chose_higher_option"] == 1).all()
+
+
+_H6_H10_REGRESS_CASES = [
+    ("governance_vs_stability", regress_h6, "H6"),
+    ("liquidity_vs_stability", regress_h7, "H7"),
+    ("asset_backing_vs_liquidity", regress_h8, "H8"),
+    ("asset_backing_vs_stability", regress_h9, "H9"),
+    ("asset_backing_vs_governance", regress_h10, "H10"),
+]
+
+
+def _populated_session_with_genuine_variation(sandbox_key: str, num_days: int = 8) -> Session:
+    """Mirrors test_hypothesis_h3.py's _populated_session_with_genuine_variation:
+    a single run_matrix call forces a constant proposed_currency, so
+    chose_higher_option never varies within one call. Two run_matrix calls
+    into the same session, forcing option_a then option_b, gives genuine
+    variation for fit_clustered_logit to fit against."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = Session(engine)
+    option_a, option_b = SANDBOX_CURRENCY_PAIRS[sandbox_key]
+    for call_index, symbol in enumerate((option_a.symbol, option_b.symbol)):
+        run_matrix(
+            model_candidates=MODEL_CANDIDATES,
+            seeds=[0],
+            num_days=num_days,
+            dry_run=True,
+            exercise_llm_path=True,
+            matrix_run_id=f"{sandbox_key}-variation-{call_index}",
+            mock_llm_decision={
+                "action": "ACCEPT",
+                "proposed_currency": symbol,
+                "proposed_chain": "ethereum",
+                "amount": 1.0,
+                "price": 1.0,
+                "reasoning": "forced alternation for genuine chose_higher_option variation",
+            },
+            session=session,
+        )
+    return session
+
+
+def test_each_regress_h6_h10_returns_separate_domestic_and_cross_border_results():
+    for sandbox_key, regress_fn, hyp_label in _H6_H10_REGRESS_CASES:
+        session = _populated_session_with_genuine_variation(sandbox_key)
+
+        domestic_result = regress_fn(session, cell_variant="domestic")
+        cross_border_result = regress_fn(session, cell_variant="cross_border")
+
+        assert isinstance(domestic_result, RegressionResult)
+        assert isinstance(cross_border_result, RegressionResult)
+        assert domestic_result.hypothesis == f"{hyp_label}_domestic"
+        assert cross_border_result.hypothesis == f"{hyp_label}_cross_border"
+        assert domestic_result.regressor == "cara_a"
