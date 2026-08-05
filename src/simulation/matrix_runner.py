@@ -258,6 +258,13 @@ re-invoke `run_matrix` with the same `matrix_run_id`/database/
 interrupted one resumes from its last persisted day, and anything that
 never started runs fresh -- without the caller needing to track which
 cells already finished.
+
+`llm_max_workers` (default 1, no behavior change) is passed straight
+through to every `run_timestep` call as `max_workers` -- see that
+function's docstring. Values above 1 parallelize LLM negotiation calls
+across buyers within each simulated day; this is the mechanism Plan 6a
+adds to make a 365-day x 3-seed x 13-cell real run feasible in
+wall-clock time.
 """
 
 import pickle
@@ -522,6 +529,7 @@ def run_matrix(
     exercise_llm_path: bool = False,
     mock_llm_decision: dict | None = None,
     checkpoint_dir: Path | None = None,
+    llm_max_workers: int = 1,
 ) -> tuple[list[MatrixCellResult], list[tuple[str, int, Exception]]]:
     """Run the 13-cell x `seeds` experiment matrix for `num_days` days each.
 
@@ -777,6 +785,7 @@ def run_matrix(
                         use_llm=use_llm,
                         openrouter_client=cell_openrouter_client,
                         polygon_client=polygon_client,
+                        max_workers=llm_max_workers,
                     )
                     persist_full_timestep(session, env, result, run_id=run_id)
                     if progress_callback is not None:
