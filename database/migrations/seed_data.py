@@ -11,6 +11,13 @@ from database.session import get_engine, new_session
 from src.simulation.environment import Environment
 
 
+# `agents`/`wallets` are keyed `(run_id, agent_id)` (see AgentRecord's
+# docstring), so even a fixture needs a run_id. A fixed literal keeps this
+# script idempotent: re-running it upserts the same rows rather than
+# accumulating a new copy of the fixture population per invocation.
+SEED_RUN_ID = "seed-small-baseline"
+
+
 def seed_small_baseline() -> None:
     Base.metadata.create_all(get_engine())
     env = Environment.build("baseline", {"consumer": 3, "merchant": 2})
@@ -19,7 +26,7 @@ def seed_small_baseline() -> None:
     try:
         repo = AgentRepository(session)
         for agent in env.agents.values():
-            repo.upsert_agent(agent)
+            repo.upsert_agent(agent, SEED_RUN_ID)
         session.commit()
     finally:
         session.close()

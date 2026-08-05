@@ -36,7 +36,7 @@ from database.models import (
     TimestepLogRecord,
     TransactionRecord,
 )
-from src.agents.population import generate_agent_population
+from src.agents.population import ROLE_COUNTS, generate_agent_population
 from src.currencies.currency import load_currency_universe
 from src.currencies.exchange_rates import ExchangeRateTable
 from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
@@ -232,11 +232,19 @@ def test_run_matrix_persists_provenance_agent_and_transaction_rows():
     # Every cell/seed ran exactly 1 day -> exactly 13 TimestepLogRecords.
     assert session.query(TimestepLogRecord).count() == 13
 
-    # Every cell built its own 100-agent population; AgentRepository upserts
-    # by agent_id, and deterministic agent_ids repeat across cells for the
-    # same seed, so the total row count is at most 100 (never more).
-    assert session.query(AgentRecord).count() <= 100
-    assert session.query(AgentRecord).count() > 0
+    # Every cell built its own 100-agent population. Deterministic agent_ids
+    # repeat across cells for the same seed, but `agents` is keyed
+    # `(run_id, id)` now -- so each of the 13 cells gets its OWN 100 rows.
+    #
+    # This assertion used to read `count() <= 100`, encoding the old bare-`id`
+    # primary key's behavior: 12 of the 13 cells' agent rows never existed at
+    # all, because each cell's upsert found the previous cell's row for the
+    # same id and left it alone (and `_sync_wallet` then overwrote that row's
+    # wallet mirror). That was the bug, not the contract -- see
+    # `AgentRecord`'s docstring and tests/test_agent_persistence.py's
+    # run-scoping regression tests.
+    assert session.query(AgentRecord).count() == 13 * sum(ROLE_COUNTS.values())
+    assert {row.run_id for row in session.query(AgentRecord).all()} == run_ids
 
     # `total_transactions` is a cheap per-cell aggregate populated
     # regardless of `keep_daily_results` (default False here, so

@@ -9,7 +9,7 @@ tool needs).
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Float, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Float, ForeignKey, ForeignKeyConstraint, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON, DateTime
 
@@ -19,8 +19,28 @@ class Base(DeclarativeBase):
 
 
 class AgentRecord(Base):
+    """Per-run agent identity, keyed by `(run_id, id)`.
+
+    Run-scoping (not merely `id`) is load-bearing, not defensive: agent ids
+    from `src/agents/population.py`'s `generate_agent_population` are a pure
+    function of `(profile_name, seed, slot_index)`
+    (`f"{profile_name}-seed{seed}-{slot_index:03d}"`), and the 13-cell
+    experiment matrix (`src/simulation/matrix_runner.py`'s `run_matrix`)
+    runs EVERY cell with the SAME seeds -- so all 13 cells generate the
+    identical 100 agent ids. With the original bare `id` primary key that
+    meant each later cell silently overwrote the previous cell's `agents`
+    (and `wallets`) rows for those shared ids, even in a fully sequential
+    single-process run; under `distributed_matrix_runner`'s cross-process
+    runner two cells racing on the same insert also produced an intermittent
+    `UNIQUE constraint failed: agents.id` IntegrityError. Composite
+    `(run_id, id)` gives each cell/seed its own independent agent rows,
+    matching the pattern `AgentStateRecord` (`(run_id, timestep, agent_id)`)
+    already used correctly.
+    """
+
     __tablename__ = "agents"
 
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("simulation_runs.run_id"), primary_key=True)
     id: Mapped[str] = mapped_column(String, primary_key=True)
     agent_class: Mapped[str] = mapped_column(String)
     profile_name: Mapped[str] = mapped_column(String)
@@ -32,20 +52,51 @@ class AgentRecord(Base):
 
 
 class WalletRecord(Base):
+    """Latest-known wallet mirror, run-scoped (see `AgentRecord`'s docstring).
+
+    Keeps its surrogate autoincrement `id` primary key rather than adopting
+    the natural `(run_id, agent_id, currency_symbol)` key: `AgentRepository
+    ._sync_wallet` rewrites an agent's rows every simulated day via
+    delete-then-insert on one long-lived session, and a natural primary key
+    would make each day's re-insert collide with the just-deleted row's
+    identity in SQLAlchemy's identity map. `run_id` is what actually fixes
+    the cross-cell clobbering -- `_sync_wallet`'s DELETE is scoped to
+    `(run_id, agent_id)`, so one cell's wallet snapshot can no longer erase
+    another cell's.
+    """
+
     __tablename__ = "wallets"
+    __table_args__ = (ForeignKeyConstraint(["run_id", "agent_id"], ["agents.run_id", "agents.id"]),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    agent_id: Mapped[str] = mapped_column(String, ForeignKey("agents.id"))
+    run_id: Mapped[str] = mapped_column(String)
+    agent_id: Mapped[str] = mapped_column(String)
     currency_symbol: Mapped[str] = mapped_column(String)
     balance: Mapped[float] = mapped_column(Float)
 
 
 class TransactionRecord(Base):
+    """`buyer_id`/`seller_id` are plain (undeclared-FK) agent-id columns.
+
+    They used to declare `ForeignKey("agents.id")`, which stopped being
+    well-formed SQL once `agents` became `(run_id, id)`-keyed (`id` alone is
+    no longer unique, and a single-column reference to a non-unique parent
+    column is invalid -- SQLite tolerates the DDL but reports "foreign key
+    mismatch" the moment `PRAGMA foreign_keys=ON`, and Postgres refuses to
+    create the table at all). This table carries no run-scope column of its
+    own, so the composite `(run_id, agent_id)` reference the other
+    agent-referencing tables now use is not available here; declaring
+    nothing is strictly better than declaring something invalid. Nothing is
+    lost at runtime -- FK enforcement is off by default in SQLite and this
+    codebase never enables it, and no `relationship()` anywhere relies on
+    this metadata.
+    """
+
     __tablename__ = "transactions"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    buyer_id: Mapped[str] = mapped_column(String, ForeignKey("agents.id"))
-    seller_id: Mapped[str] = mapped_column(String, ForeignKey("agents.id"))
+    buyer_id: Mapped[str] = mapped_column(String)
+    seller_id: Mapped[str] = mapped_column(String)
     good_name: Mapped[str] = mapped_column(String)
     currency_symbol: Mapped[str] = mapped_column(String)
     chain_name: Mapped[str] = mapped_column(String)
@@ -109,15 +160,23 @@ class MetricRecord(Base):
 class LLMDecisionRecord(Base):
     """Every LLM decision, whether it came from the primary model, a fallback,
     or a same-model economic-correction reprompt (see fallback_used /
-    fallback_reason / model_attempts)."""
+    fallback_reason / model_attempts).
+
+    `simulation_id` IS this row's run_id (`database/repository.py`'s
+    `_llm_decision_log_entry` sets `simulation_id=run_id`), so it pairs with
+    `agent_id` to form the composite reference into the now
+    `(run_id, id)`-keyed `agents` table -- the old single-column
+    `ForeignKey("agents.id")` on `agent_id` is no longer well-formed (see
+    `TransactionRecord`'s docstring)."""
 
     __tablename__ = "llm_decisions"
+    __table_args__ = (ForeignKeyConstraint(["simulation_id", "agent_id"], ["agents.run_id", "agents.id"]),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     decision_id: Mapped[str] = mapped_column(String)
     simulation_id: Mapped[str] = mapped_column(String)
     timestep: Mapped[int] = mapped_column(Integer)
-    agent_id: Mapped[str] = mapped_column(String, ForeignKey("agents.id"))
+    agent_id: Mapped[str] = mapped_column(String)
     agent_type: Mapped[str] = mapped_column(String)
     requested_model: Mapped[str] = mapped_column(String)
     actual_model: Mapped[str] = mapped_column(String)
@@ -220,10 +279,11 @@ class AgentStateRecord(Base):
     2026-07-29-phase3-01-foundation-persistence.md Task 8."""
 
     __tablename__ = "agent_states"
+    __table_args__ = (ForeignKeyConstraint(["run_id", "agent_id"], ["agents.run_id", "agents.id"]),)
 
     run_id: Mapped[str] = mapped_column(String, ForeignKey("simulation_runs.run_id"), primary_key=True)
     timestep: Mapped[int] = mapped_column(Integer, primary_key=True)
-    agent_id: Mapped[str] = mapped_column(String, ForeignKey("agents.id"), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String, primary_key=True)
     risk_profile: Mapped[str] = mapped_column(String)
     cara_coefficient: Mapped[float | None] = mapped_column(Float, nullable=True)
     real_purchasing_power: Mapped[float] = mapped_column(Float)
@@ -233,10 +293,11 @@ class AgentStateRecord(Base):
 
 class AgentMemoryLogRecord(Base):
     __tablename__ = "agent_memory_logs"
+    __table_args__ = (ForeignKeyConstraint(["run_id", "agent_id"], ["agents.run_id", "agents.id"]),)
 
     memory_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_id: Mapped[str] = mapped_column(String, ForeignKey("simulation_runs.run_id"))
     timestep: Mapped[int] = mapped_column(Integer)
-    agent_id: Mapped[str] = mapped_column(String, ForeignKey("agents.id"))
+    agent_id: Mapped[str] = mapped_column(String)
     memory_type: Mapped[str] = mapped_column(String)
     memory_text: Mapped[str] = mapped_column(String)

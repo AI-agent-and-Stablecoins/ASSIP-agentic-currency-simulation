@@ -40,8 +40,13 @@ def _session() -> Session:
     return Session(engine)
 
 
-def _agent(agent_id: str, currency_zone: str | None) -> AgentRecord:
+def _agent(agent_id: str, currency_zone: str | None, run_id: str = _MASTER_RUN_ID) -> AgentRecord:
+    # `agents` is keyed `(run_id, id)` -- see database/models.py's
+    # AgentRecord docstring. Every agent in these fixtures belongs to the
+    # master run (the only cell build_h5_dataset reads), so run_id defaults
+    # to it.
     return AgentRecord(
+        run_id=run_id,
         id=agent_id,
         agent_class="consumer",
         profile_name="test",

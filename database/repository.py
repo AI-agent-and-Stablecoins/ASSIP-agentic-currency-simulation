@@ -176,10 +176,21 @@ class AgentRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    def upsert_agent(self, agent: BaseAgent) -> None:
-        record = self.session.get(AgentRecord, agent.agent_id)
+    def upsert_agent(self, agent: BaseAgent, run_id: str) -> None:
+        """Upserts this agent's identity row for `run_id`.
+
+        `run_id` is part of the key, not decoration: `agents` is keyed
+        `(run_id, id)` (see `AgentRecord`'s docstring) precisely because the
+        13-cell matrix runs every cell with the same seeds and therefore the
+        same deterministic agent ids. Without run-scoping here, a later
+        cell's upsert found the earlier cell's row and silently overwrote its
+        wallet mirror, and two cells racing across processes collided on
+        `agents.id`.
+        """
+        record = self.session.get(AgentRecord, {"run_id": run_id, "id": agent.agent_id})
         if record is None:
             record = AgentRecord(
+                run_id=run_id,
                 id=agent.agent_id,
                 agent_class=agent.agent_class,
                 profile_name=agent.profile_name,
@@ -190,12 +201,24 @@ class AgentRepository:
                 created_at=datetime.now(timezone.utc),
             )
             self.session.add(record)
-        self._sync_wallet(agent)
+        self._sync_wallet(agent, run_id)
 
-    def _sync_wallet(self, agent: BaseAgent) -> None:
-        self.session.query(WalletRecord).filter(WalletRecord.agent_id == agent.agent_id).delete()
+    def _sync_wallet(self, agent: BaseAgent, run_id: str) -> None:
+        """Replaces this agent's wallet mirror for `run_id` only.
+
+        The DELETE is scoped by `run_id` AND `agent_id`. Scoping by
+        `agent_id` alone (the original behavior) meant cell 2's very first
+        day wiped cell 1's committed wallet rows for the same shared agent
+        id, straight through all 13 cells -- last-write-wins clobbering with
+        no error to notice it by.
+        """
+        self.session.query(WalletRecord).filter(
+            WalletRecord.run_id == run_id, WalletRecord.agent_id == agent.agent_id
+        ).delete()
         for symbol, balance in agent.wallet.balances.items():
-            self.session.add(WalletRecord(agent_id=agent.agent_id, currency_symbol=symbol, balance=balance))
+            self.session.add(
+                WalletRecord(run_id=run_id, agent_id=agent.agent_id, currency_symbol=symbol, balance=balance)
+            )
 
 
 class TransactionRepository:
@@ -297,8 +320,15 @@ class InterventionLogRepository:
         self.session.add(InterventionLogRecord(**entry.model_dump()))
 
 
-def persist_timestep(session: Session, env: Environment, result: TimestepResult, commit: bool = True) -> None:
+def persist_timestep(
+    session: Session, env: Environment, result: TimestepResult, run_id: str, commit: bool = True
+) -> None:
     """Persist one day's agent/transaction/negotiation rows.
+
+    `run_id` scopes the `agents`/`wallets` rows this function writes (see
+    `AgentRepository.upsert_agent`). It is required, not optional-with-a-
+    default: a default would silently reintroduce the cross-cell clobbering
+    the composite `(run_id, id)` key exists to prevent.
 
     `commit` defaults to True (this function's original, standalone
     behavior: one commit covering just these rows). `persist_full_timestep`
@@ -312,7 +342,7 @@ def persist_timestep(session: Session, env: Environment, result: TimestepResult,
     negotiation_repo = NegotiationRepository(session)
 
     for agent in env.agents.values():
-        agent_repo.upsert_agent(agent)
+        agent_repo.upsert_agent(agent, run_id)
     for tx in result.transactions:
         tx_repo.record(tx)
     for log in result.negotiations:
@@ -466,7 +496,7 @@ def persist_full_timestep(session: Session, env: Environment, result: TimestepRe
     `adapt_cara_coefficient` is a no-op for non-CARA-eligible
     (cara_coefficient is None) agents automatically.
     """
-    persist_timestep(session, env, result, commit=False)
+    persist_timestep(session, env, result, run_id=run_id, commit=False)
 
     risk_adaptation_params = load_risk_adaptation_params()
 
