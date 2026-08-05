@@ -28,6 +28,44 @@ def _partition(items: list, num_groups: int) -> list[list]:
     return [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
 
 
+def _sanitize_failures(
+    failures: list[tuple[str, int, Exception]],
+) -> list[tuple[str, int, Exception]]:
+    """Replaces each failure's original exception with a plain `RuntimeError`
+    built from a string (`f"{type(exc).__name__}: {exc}"`), so `(cell_key,
+    seed, exception)` is guaranteed picklable no matter what `run_matrix`
+    put there.
+
+    Why this is needed: `run_matrix`'s per-cell/seed `try/except Exception`
+    (see `src/simulation/matrix_runner.py`) catches ANY exception a real
+    day-loop iteration can raise -- and in a real (non-dry-run) production
+    run, that can be an `httpx` exception from a failed OpenRouter/Polygon
+    call, carrying `Request`/`Response` objects with open sockets/streams in
+    their internal state. `_run_cell_group` runs in a `ProcessPoolExecutor`
+    worker and returns `(results, failures)` as ONE atomic tuple that must
+    be pickled to cross back to the parent process; if even one exception
+    inside `failures` fails to pickle, the WHOLE tuple fails to pickle --
+    silently losing every successfully-computed cell in that worker's group
+    (not just the one failure) behind a confusing `PicklingError`/
+    `BrokenProcessPool`, instead of surfacing the real underlying cause.
+
+    A plain built-in exception constructed from a string is always
+    picklable, so sanitizing here (after `run_matrix` returns, before
+    `_run_cell_group`'s return value crosses the process boundary) makes
+    that failure mode structurally impossible, regardless of what kind of
+    exception object a future change to `run_matrix` or its callees might
+    someday put into `failures`. The original exception's type name and
+    message are preserved verbatim in the new exception's message, so a
+    caller reading `failures` later can still diagnose what actually went
+    wrong -- only the (potentially unpicklable) live exception OBJECT is
+    discarded, not the information it carried.
+    """
+    return [
+        (cell_key, seed, RuntimeError(f"{type(exc).__name__}: {exc}"))
+        for cell_key, seed, exc in failures
+    ]
+
+
 def _run_cell_group(
     cell_keys: list[str],
     model_candidates: list[str],
@@ -60,7 +98,7 @@ def _run_cell_group(
     openrouter_client = openrouter_client_factory() if openrouter_client_factory is not None else None
     polygon_client = polygon_client_factory() if polygon_client_factory is not None else None
 
-    return run_matrix(
+    results, failures = run_matrix(
         model_candidates=model_candidates,
         seeds=seeds,
         num_days=num_days,
@@ -73,6 +111,7 @@ def _run_cell_group(
         llm_max_workers=llm_max_workers,
         checkpoint_dir=checkpoint_dir,
     )
+    return results, _sanitize_failures(failures)
 
 
 def run_matrix_distributed(
