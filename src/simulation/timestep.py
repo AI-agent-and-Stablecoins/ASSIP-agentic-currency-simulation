@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import random
+import threading
 from typing import Callable
 
 from pydantic import BaseModel, Field
@@ -348,6 +349,200 @@ def _make_llm_decide_closure(
     return _decide
 
 
+class _LockedList:
+    """Wraps a list so `.append()` is lock-protected -- lets
+    `_make_llm_decide_closure` keep its existing `decision_log.append(...)`
+    call site unchanged while making concurrent appends from multiple
+    buyer-threads safe."""
+
+    def __init__(self, target: list, lock: threading.Lock):
+        self._target = target
+        self._lock = lock
+
+    def append(self, item) -> None:
+        with self._lock:
+            self._target.append(item)
+
+
+def _process_buyer_llm_day(
+    buyer: BuyerAgent,
+    env: Environment,
+    day: int,
+    fx_params,
+    live_price_snapshots: dict,
+    currency_history: dict,
+    macro_history,
+    openrouter_client: httpx.Client,
+    max_negotiation_rounds: int,
+    agreement_tolerance: float,
+    concession_rate: float,
+    result: TimestepResult,
+    lock: threading.Lock,
+) -> None:
+    """Runs one buyer's full per-day LLM-path work (every good in
+    env.goods, in order -- a buyer's own wallet balance carries from one
+    good to the next within its own loop, so goods for ONE buyer must stay
+    sequential; see Plan 6a's design spec Sec 2.1). Safe to call for
+    different buyers concurrently from separate threads: `lock` serializes
+    the only shared-state mutations (result.llm_decisions/llm_negotiations/
+    transactions appends, wallet settlement, env.ledger.record, memory
+    updates) -- everything else here (listing lookup, candidate
+    generation, LLM negotiation calls) touches only this buyer's own
+    thread-exclusive state or read-only environment state (see Plan 6a's
+    design spec Sec 2 for the full safety analysis this relies on).
+
+    Known accepted limitation (documented, not a bug): a seller shared by
+    two concurrently-running buyers may have its wallet read (via
+    seller.build_llm_context(), for that seller's own LLM prompt) without
+    holding `lock`, so that read can very rarely reflect a wallet state
+    from just before or just after another thread's concurrent settlement
+    of a different transaction with the same seller. This affects only
+    what a seller's OWN prompt displays as its current balance, not any
+    economic invariant (settlement itself is always lock-protected and
+    exact) -- locking every context-read would serialize away most of this
+    task's concurrency benefit for a cosmetic, momentary display staleness.
+    """
+    from src.llm.agent_reasoning import TransactionContext, build_decision_context
+    from src.llm.market_intelligence import load_currency_profile
+
+    for good in env.goods:
+        listings = env.marketplace.find_counterparties(good.name, exclude_agent_id=buyer.agent_id)
+        if not listings:
+            continue
+        listing = listings[0]
+        seller = env.agents[listing.seller_id]
+
+        candidates = generate_candidates(
+            buyer.wallet.balances,
+            env.currencies,
+            env.chains,
+            env.liquidity_pools,
+            trust_ledger=env.trust_ledger,
+        )
+        if not candidates:
+            continue
+
+        spread_optimal_currency, spread_optimal_chain, gas_optimal_currency, gas_optimal_chain = (
+            _spread_and_gas_optimal(candidates)
+        )
+
+        supported_currencies = {c.currency_symbol for c in candidates}
+        supported_chains = {c.chain_name for c in candidates}
+        currency_profiles = {
+            symbol: profile
+            for symbol in supported_currencies
+            if (profile := load_currency_profile(symbol)) is not None
+        }
+        counterparty_cross_zone = (
+            buyer.currency_zone is not None
+            and seller.currency_zone is not None
+            and buyer.currency_zone != seller.currency_zone
+        )
+        transaction_context = TransactionContext(
+            is_cross_border=counterparty_cross_zone,
+            origin_currency=buyer.currency_zone if counterparty_cross_zone else None,
+            destination_currency=seller.currency_zone if counterparty_cross_zone else None,
+        )
+
+        buyer_context = build_decision_context(
+            buyer.build_llm_context(),
+            candidates,
+            currency_profiles,
+            env.macro_state,
+            env.macro_state,
+            transaction_context,
+            live_price_snapshots=live_price_snapshots,
+            currency_history=currency_history,
+            macro_history=macro_history,
+        )
+        seller_context = build_decision_context(
+            seller.build_llm_context(),
+            candidates,
+            currency_profiles,
+            env.macro_state,
+            env.macro_state,
+            transaction_context,
+            live_price_snapshots=live_price_snapshots,
+            currency_history=currency_history,
+            macro_history=macro_history,
+        )
+
+        buyer_wallet_balances_usd = {
+            symbol: env.exchange_rates.convert(balance, symbol, "USD")
+            for symbol, balance in buyer_context.agent.wallet_balances.items()
+        }
+
+        buyer_decide = _make_llm_decide_closure(
+            buyer,
+            "buyer",
+            buyer_context,
+            buyer.assigned_model,
+            openrouter_client,
+            supported_currencies,
+            supported_chains,
+            listing.true_price,
+            _LockedList(result.llm_decisions, lock),
+            buyer_wallet_balances=buyer_wallet_balances_usd,
+            spread_optimal_currency=spread_optimal_currency,
+            spread_optimal_chain=spread_optimal_chain,
+            gas_optimal_currency=gas_optimal_currency,
+            gas_optimal_chain=gas_optimal_chain,
+        )
+        seller_decide = _make_llm_decide_closure(
+            seller,
+            "seller",
+            seller_context,
+            seller.assigned_model,
+            openrouter_client,
+            supported_currencies,
+            supported_chains,
+            listing.true_price,
+            _LockedList(result.llm_decisions, lock),
+            buyer_wallet_balances=buyer_wallet_balances_usd,
+            spread_optimal_currency=spread_optimal_currency,
+            spread_optimal_chain=spread_optimal_chain,
+            gas_optimal_currency=gas_optimal_currency,
+            gas_optimal_chain=gas_optimal_chain,
+        )
+
+        session = run_llm_negotiation(
+            buyer.agent_id,
+            seller.agent_id,
+            buyer_decide,
+            seller_decide,
+            max_rounds=max_negotiation_rounds,
+        )
+        with lock:
+            result.llm_negotiations.append(session)
+
+        tx = build_transaction_from_negotiation(
+            session, candidates, buyer.agent_id, seller.agent_id, good.name, day
+        )
+        if tx is None:
+            continue
+
+        tx.expected_value = listing.true_price
+        tx.paid_value = env.exchange_rates.convert(tx.paid_value, "USD", tx.currency_symbol)
+        tx.fx_tax_paid = compute_fx_tax(
+            tx.paid_value, env.currencies[tx.currency_symbol], buyer.currency_zone, fx_params.fx_tax_rate
+        )
+
+        with lock:
+            validation = validate_transaction(tx, buyer.wallet, env.currencies)
+            if not validation.is_valid:
+                tx.status = TransactionStatus.FAILED
+                result.transactions.append(tx)
+                continue
+
+            settle(tx, buyer.wallet, seller.wallet)
+            env.ledger.record(tx)
+            result.transactions.append(tx)
+
+            success = tx.status == TransactionStatus.SETTLED
+            buyer.update_memory(tx.currency_symbol, success)
+            seller.update_memory(tx.currency_symbol, success)
+
+
 def _polygon_ticker(symbol: str) -> str:
     """Derive this currency's Polygon crypto-aggregate reference ticker.
 
@@ -533,215 +728,46 @@ def run_timestep(
     # Step 3: select active agents (buyers act each day; sellers already listed above).
     active_buyers = agent_activation_order(buyers, day, rng)
 
-    for buyer in active_buyers:
-        for good in env.goods:
-            # Step 4: agent observes the environment (available listings).
-            listings = env.marketplace.find_counterparties(good.name, exclude_agent_id=buyer.agent_id)
-            if not listings:
-                continue
-            listing = listings[0]
-            seller = env.agents[listing.seller_id]
+    lock = threading.Lock()
 
-            # Steps 5, 7-8: compute utility, choose currency and blockchain.
-            candidates = generate_candidates(
-                buyer.wallet.balances,
-                env.currencies,
-                env.chains,
-                env.liquidity_pools,
-                trust_ledger=env.trust_ledger,
+    if use_llm:
+        for buyer in active_buyers:
+            _process_buyer_llm_day(
+                buyer,
+                env,
+                day,
+                fx_params,
+                live_price_snapshots,
+                currency_history,
+                macro_history,
+                openrouter_client,
+                max_negotiation_rounds,
+                agreement_tolerance,
+                concession_rate,
+                result,
+                lock,
             )
-            if not candidates:
-                continue
+    else:
+        for buyer in active_buyers:
+            for good in env.goods:
+                listings = env.marketplace.find_counterparties(good.name, exclude_agent_id=buyer.agent_id)
+                if not listings:
+                    continue
+                listing = listings[0]
+                seller = env.agents[listing.seller_id]
 
-            spread_optimal_currency, spread_optimal_chain, gas_optimal_currency, gas_optimal_chain = (
-                _spread_and_gas_optimal(candidates)
-            )
-
-            if use_llm:
-                # Steps 6-9 (LLM path): each side gets its own AgentDecisionContext
-                # (own assigned_model/risk_aversion/currency_zone/wallet), and a
-                # full LLM-vs-LLM negotiation replaces the deterministic
-                # choose_currency_and_chain + negotiate() call. supported_
-                # currencies/chains are narrowed to exactly what was offered
-                # this round -- not the full universe -- per the plan's
-                # anti-hallucination tightening.
-                #
-                # Local imports: these pull in httpx (via src.llm.agent_reasoning /
-                # src.llm.market_intelligence), so they must not be module-level --
-                # see this file's module docstring for why.
-                from src.llm.agent_reasoning import TransactionContext, build_decision_context
-                from src.llm.market_intelligence import load_currency_profile
-
-                supported_currencies = {c.currency_symbol for c in candidates}
-                supported_chains = {c.chain_name for c in candidates}
-                currency_profiles = {
-                    symbol: profile
-                    for symbol in supported_currencies
-                    if (profile := load_currency_profile(symbol)) is not None
-                }
-                # NOTE: this is buyer-vs-seller currency-zone mismatch, known
-                # before any settlement currency is chosen -- a related but
-                # distinct concept from Task 6's FX conversion tax "cross-border"
-                # check, which will compare the settlement currency's zone
-                # against the buyer's currency_zone (computed later, once a
-                # currency is actually agreed). Do not conflate the two names.
-                counterparty_cross_zone = (
-                    buyer.currency_zone is not None
-                    and seller.currency_zone is not None
-                    and buyer.currency_zone != seller.currency_zone
+                candidates = generate_candidates(
+                    buyer.wallet.balances,
+                    env.currencies,
+                    env.chains,
+                    env.liquidity_pools,
+                    trust_ledger=env.trust_ledger,
                 )
-                transaction_context = TransactionContext(
-                    is_cross_border=counterparty_cross_zone,
-                    origin_currency=buyer.currency_zone if counterparty_cross_zone else None,
-                    destination_currency=seller.currency_zone if counterparty_cross_zone else None,
-                )
-
-                buyer_context = build_decision_context(
-                    buyer.build_llm_context(),
-                    candidates,
-                    currency_profiles,
-                    env.macro_state,
-                    env.macro_state,
-                    transaction_context,
-                    live_price_snapshots=live_price_snapshots,
-                    currency_history=currency_history,
-                    macro_history=macro_history,
-                )
-                seller_context = build_decision_context(
-                    seller.build_llm_context(),
-                    candidates,
-                    currency_profiles,
-                    env.macro_state,
-                    env.macro_state,
-                    transaction_context,
-                    live_price_snapshots=live_price_snapshots,
-                    currency_history=currency_history,
-                    macro_history=macro_history,
-                )
-
-                # Both closures check ACCEPT's funds validity against the buyer's
-                # wallet, never the seller's -- the buyer is always the payer, so
-                # a seller ACCEPTing a currency it doesn't itself hold is
-                # irrelevant to whether the trade is affordable.
-                #
-                # decision.price is USD-scale (the negotiation convention this
-                # fix chain established -- see d8f6568), but
-                # buyer_context.agent.wallet_balances is native currency units
-                # (used as-is for the prompt's own wallet display, which must
-                # stay untouched). Converting to USD here only affects the
-                # funds-CHECK input: without it, a gold-pegged buyer with a
-                # realistic e.g. {"PAXG": 1.0} balance would be rejected as
-                # "insufficient funds" against a ~100 USD price, since
-                # 1.0 < 100.0 even though 1.0 PAXG is worth ~2400 USD.
-                buyer_wallet_balances_usd = {
-                    symbol: env.exchange_rates.convert(balance, symbol, "USD")
-                    for symbol, balance in buyer_context.agent.wallet_balances.items()
-                }
-                buyer_decide = _make_llm_decide_closure(
-                    buyer,
-                    "buyer",
-                    buyer_context,
-                    buyer.assigned_model,
-                    openrouter_client,
-                    supported_currencies,
-                    supported_chains,
-                    listing.true_price,
-                    result.llm_decisions,
-                    buyer_wallet_balances=buyer_wallet_balances_usd,
-                    spread_optimal_currency=spread_optimal_currency,
-                    spread_optimal_chain=spread_optimal_chain,
-                    gas_optimal_currency=gas_optimal_currency,
-                    gas_optimal_chain=gas_optimal_chain,
-                )
-                seller_decide = _make_llm_decide_closure(
-                    seller,
-                    "seller",
-                    seller_context,
-                    seller.assigned_model,
-                    openrouter_client,
-                    supported_currencies,
-                    supported_chains,
-                    listing.true_price,
-                    result.llm_decisions,
-                    buyer_wallet_balances=buyer_wallet_balances_usd,
-                    spread_optimal_currency=spread_optimal_currency,
-                    spread_optimal_chain=spread_optimal_chain,
-                    gas_optimal_currency=gas_optimal_currency,
-                    gas_optimal_chain=gas_optimal_chain,
-                )
-
-                session = run_llm_negotiation(
-                    buyer.agent_id,
-                    seller.agent_id,
-                    buyer_decide,
-                    seller_decide,
-                    max_rounds=max_negotiation_rounds,
-                )
-                result.llm_negotiations.append(session)
-
-                tx = build_transaction_from_negotiation(
-                    session, candidates, buyer.agent_id, seller.agent_id, good.name, day
-                )
-                if tx is None:
+                if not candidates:
                     continue
 
-                # Task 4's carry-forward: build_transaction_from_negotiation
-                # stubs expected_value from the negotiation's own opening
-                # offer (a negotiation anchor, not ground truth). Overwrite it
-                # with the real deterministic fair value computed above (the
-                # same listing.true_price the rule-based path already uses)
-                # before this Transaction is used for settlement,
-                # persistence, or hallucination detection.
-                tx.expected_value = listing.true_price
-
-                # Task 13: build_transaction_from_negotiation stores the
-                # LLM's raw negotiated price number verbatim -- USD-scale, by
-                # the same convention the deterministic path below uses (and
-                # that the tx.expected_value overwrite right above already
-                # relies on: listing.true_price is a USD number). settle()/
-                # validate_transaction, however, treat tx.paid_value as a
-                # literal NATIVE-UNIT amount of tx.currency_symbol. Without
-                # this conversion, any non-USD-pegged settlement currency
-                # (e.g. gold-backed PAXG/XAUT at ~2400 USD/unit) would try to
-                # debit the raw USD number's worth of *units* -- ~2400x too
-                # much -- and always fail "insufficient funds".
-                tx.paid_value = env.exchange_rates.convert(tx.paid_value, "USD", tx.currency_symbol)
-
-                # Task 6: cross-border FX conversion tax -- compared against
-                # the settlement currency's zone (USD/EUR; gold-backed
-                # currencies are zone-neutral) vs. the buyer's own
-                # currency_zone (None for legacy count-based agents, which
-                # never pay this tax). Computed on the final accepted price,
-                # same as the deterministic path below. Must run AFTER the
-                # USD->native-unit conversion above: settle() debits
-                # `tx.paid_value + tx.fx_tax_paid` together in
-                # tx.currency_symbol native units, so fx_tax_paid has to be a
-                # percentage of the same native-unit paid_value, not of the
-                # pre-conversion USD number.
-                tx.fx_tax_paid = compute_fx_tax(
-                    tx.paid_value, env.currencies[tx.currency_symbol], buyer.currency_zone, fx_params.fx_tax_rate
-                )
-
-                # Step 10: validate.
-                validation = validate_transaction(tx, buyer.wallet, env.currencies)
-                if not validation.is_valid:
-                    tx.status = TransactionStatus.FAILED
-                    result.transactions.append(tx)
-                    continue
-
-                # Step 11: settle payment.
-                settle(tx, buyer.wallet, seller.wallet)
-                env.ledger.record(tx)
-                result.transactions.append(tx)
-
-                # Step 12: update memory/preferences.
-                success = tx.status == TransactionStatus.SETTLED
-                buyer.update_memory(tx.currency_symbol, success)
-                seller.update_memory(tx.currency_symbol, success)
-            else:
                 chosen = buyer.choose_currency_and_chain(candidates)
 
-                # Step 9: negotiate.
                 buyer_open = buyer.opening_offer_price(listing.true_price)
                 seller_open = seller.asking_price(listing.true_price)
                 agreed_price, log = negotiate(
@@ -759,25 +785,7 @@ def run_timestep(
                 if agreed_price is None:
                     continue
 
-                # Task 13: negotiate() (like the LLM path) produces a
-                # USD-scale price -- true_price()/asking_price()/
-                # opening_offer_price() are all computed in USD. Convert to
-                # the settlement currency's native units before this becomes
-                # Transaction.paid_value, which settle()/validate_transaction
-                # treat as a literal native-unit amount of chosen
-                # .currency_symbol. Without this, any non-USD-pegged
-                # currency (e.g. gold-backed PAXG/XAUT) would try to debit
-                # the raw USD number's worth of *units* instead of its
-                # actual USD-equivalent worth.
                 native_paid_value = env.exchange_rates.convert(agreed_price, "USD", chosen.currency_symbol)
-
-                # Task 6: cross-border FX conversion tax (see the LLM-path
-                # comment above for the full rationale) -- computed here on
-                # the same env.currencies[chosen.currency_symbol]/
-                # buyer.currency_zone/fx_params.fx_tax_rate inputs so both
-                # paths apply identical FX-tax semantics before settlement.
-                # Must run AFTER the USD->native-unit conversion above, for
-                # the same unit-consistency reason given in the LLM path.
                 fx_tax_paid = compute_fx_tax(
                     native_paid_value, env.currencies[chosen.currency_symbol], buyer.currency_zone, fx_params.fx_tax_rate
                 )
@@ -795,19 +803,16 @@ def run_timestep(
                     fx_tax_paid=fx_tax_paid,
                 )
 
-                # Step 10: validate.
                 validation = validate_transaction(tx, buyer.wallet, env.currencies)
                 if not validation.is_valid:
                     tx.status = TransactionStatus.FAILED
                     result.transactions.append(tx)
                     continue
 
-                # Step 11: settle payment.
                 settle(tx, buyer.wallet, seller.wallet)
                 env.ledger.record(tx)
                 result.transactions.append(tx)
 
-                # Step 12: update memory/preferences.
                 success = tx.status == TransactionStatus.SETTLED
                 buyer.update_memory(chosen.currency_symbol, success)
                 seller.update_memory(chosen.currency_symbol, success)

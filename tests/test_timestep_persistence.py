@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from database.models import Base, TimestepLogRecord
 from database.repository import TimestepLogEntry, TimestepLogRepository
+from src.simulation.matrix_runner import run_matrix
 
 
 def _session() -> Session:
@@ -64,3 +65,28 @@ def test_timestep_log_primary_key_is_run_id_and_timestep():
     rows = session.query(TimestepLogRecord).order_by(TimestepLogRecord.run_id).all()
     assert len(rows) == 2
     assert [r.run_id for r in rows] == ["run-a", "run-b"]
+
+
+def test_llm_path_produces_identical_transaction_count_before_and_after_refactor():
+    """Regression baseline for Plan 6a Task 1: extracting the per-buyer LLM
+    body into _process_buyer_llm_day must not change how many transactions
+    a fixed-seed run produces."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = Session(engine)
+    results, failures = run_matrix(
+        model_candidates=["vendor/fake-model"],
+        seeds=[0],
+        num_days=3,
+        dry_run=True,
+        exercise_llm_path=True,
+        session=session,
+        keep_daily_results=True,
+    )
+    assert failures == []
+    master_result = next(r for r in results if r.cell_key == "master")
+    # Fixed seed + fixed mock decision -> deterministic transaction count.
+    # This is the count observed BEFORE Task 1's refactor (recorded via
+    # Step 2); Step 4 re-runs this test after the refactor to confirm it is
+    # unchanged.
+    assert master_result.total_transactions == 420
