@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Git worktrees (project-local scratch, never checked in)
+.worktrees/
