@@ -387,22 +387,42 @@ def build_h5_dataset(session: Session, matrix_run_id: str | None = None) -> pd.D
     # exact same result set without binding one parameter per negotiation.
     run_ids = {d.simulation_id for d in master_decisions}
     neg_participants = (
-        session.query(LLMDecisionRecord.negotiation_id, LLMDecisionRecord.agent_id)
+        session.query(LLMDecisionRecord.negotiation_id, LLMDecisionRecord.simulation_id, LLMDecisionRecord.agent_id)
         .filter(LLMDecisionRecord.simulation_id.in_(run_ids), LLMDecisionRecord.negotiation_id.isnot(None))
         .all()
     )
-    agents_by_negotiation: dict[str, set[str]] = {}
-    for neg_id, agent_id in neg_participants:
-        agents_by_negotiation.setdefault(neg_id, set()).add(agent_id)
+    # Each negotiation's participants are tracked as `(run_id, agent_id)`
+    # pairs, not bare agent ids, because the zone lookup below is keyed the
+    # same way -- see the comment on `agent_zones`.
+    agents_by_negotiation: dict[str, set[tuple[str, str]]] = {}
+    for neg_id, sim_id, agent_id in neg_participants:
+        agents_by_negotiation.setdefault(neg_id, set()).add((sim_id, agent_id))
 
-    all_agent_ids = {aid for agents in agents_by_negotiation.values() for aid in agents}
-    agent_zones = dict(
-        session.query(AgentRecord.id, AgentRecord.currency_zone).filter(AgentRecord.id.in_(all_agent_ids)).all()
-    )
+    # Zones are looked up per `(run_id, agent_id)`, and the filter is scoped
+    # by run_id as well as agent id (round-2 review finding I1). `agents` is
+    # keyed `(run_id, id)` (see database/models.py's AgentRecord docstring)
+    # and agent ids are a pure function of `(profile_name, seed, slot_index)`,
+    # so the same id exists once per cell/seed/matrix_run_id sharing this
+    # database. Filtering on `AgentRecord.id` alone returned up to one row PER
+    # run_id for each id and `dict(...)` silently kept whichever arrived last,
+    # meaning a negotiation's cross-zone test could be decided by a DIFFERENT
+    # run's agent rows. That happened to be harmless only while
+    # `currency_zone` was a pure function of the agent id -- an invariant of
+    # today's `generate_agent_population` that nothing asserts and no caller
+    # is entitled to rely on.
+    all_agent_ids = {agent_id for participants in agents_by_negotiation.values() for _, agent_id in participants}
+    agent_zones = {
+        (row_run_id, agent_id): zone
+        for row_run_id, agent_id, zone in session.query(
+            AgentRecord.run_id, AgentRecord.id, AgentRecord.currency_zone
+        )
+        .filter(AgentRecord.run_id.in_(run_ids), AgentRecord.id.in_(all_agent_ids))
+        .all()
+    }
 
     cross_zone_negotiations = set()
-    for neg_id, agent_ids in agents_by_negotiation.items():
-        zones = {agent_zones.get(aid) for aid in agent_ids} - {None}
+    for neg_id, participants in agents_by_negotiation.items():
+        zones = {agent_zones.get(key) for key in participants} - {None}
         if len(zones) >= 2:
             cross_zone_negotiations.add(neg_id)
 

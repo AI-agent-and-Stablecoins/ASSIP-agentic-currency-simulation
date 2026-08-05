@@ -28,6 +28,7 @@ from src.econometrics.regression_engine import RegressionResult
 # same-zone-excluded paths.
 
 _MASTER_RUN_ID = "matrix1-master-seed0"
+_MASTER_RUN_ID_SEED1 = "matrix1-master-seed1"
 _NON_MASTER_RUN_ID = "matrix1-liquidity_vs_governance_domestic-seed0"
 
 _USD_SYMBOLS = ("USDC", "USDT", "DAI")
@@ -150,6 +151,57 @@ def test_build_h5_dataset_only_includes_cross_zone_negotiations():
     assert df["chose_usd_zone"].isin([0, 1]).all()
     assert (df["chose_usd_zone"] == 1).all()  # both chose a USD-zone currency (USDC) here
     assert (df["eur_usd_volatility"] > 0).all()
+
+
+def test_build_h5_dataset_resolves_currency_zone_per_run_not_last_row_wins():
+    """Regression test for round-2 review finding I1.
+
+    `agents` is keyed `(run_id, id)` and agent ids are a pure function of
+    `(profile_name, seed, slot_index)`, so the SAME agent id exists once per
+    cell/seed/matrix_run_id sharing the database. The zone lookup used to
+    filter on `AgentRecord.id` alone and collapse the result with `dict(...)`,
+    which returns up to one row PER run_id for each id and silently keeps
+    whichever the database happened to return last -- so a negotiation's
+    cross-zone test could be decided by a DIFFERENT run's agent rows.
+
+    Here two master runs (two seeds) share the agent ids `"shared-a"` and
+    `"shared-b"`. Seed 0's pair is genuinely cross-zone (USD/EUR) and must be
+    INCLUDED; seed 1's pair is same-zone (both USD) and must be EXCLUDED. The
+    two runs' decisions are told apart by `actual_model`. Under the
+    unscoped lookup this test fails either way the collapse lands: if seed
+    1's rows win, `shared-b` reads as USD and seed 0's cross-zone negotiation
+    is wrongly dropped (0 rows); if seed 0's rows win, `shared-b` reads as
+    EUR and seed 1's same-zone negotiation is wrongly included (4 rows).
+    """
+    session = _session()
+    session.add_all(
+        [
+            _agent("shared-a", "USD", run_id=_MASTER_RUN_ID),
+            _agent("shared-b", "EUR", run_id=_MASTER_RUN_ID),
+            # Same ids, different run: seed 1 assigned BOTH agents to the USD
+            # zone, making its negotiation same-zone and therefore ineligible.
+            _agent("shared-a", "USD", run_id=_MASTER_RUN_ID_SEED1),
+            _agent("shared-b", "USD", run_id=_MASTER_RUN_ID_SEED1),
+        ]
+    )
+    rates = [1.05, 1.06, 1.04, 1.08, 1.03, 1.09, 1.02, 1.07, 1.05]
+    session.add_all([_rate(_MASTER_RUN_ID, day, rate) for day, rate in enumerate(rates)])
+    session.add_all([_rate(_MASTER_RUN_ID_SEED1, day, rate) for day, rate in enumerate(rates)])
+    session.add_all(
+        [
+            _decision(_MASTER_RUN_ID, 5, "shared-a", "USDC", "neg-seed0", actual_model="vendor/model-seed0"),
+            _decision(_MASTER_RUN_ID, 5, "shared-b", "USDC", "neg-seed0", actual_model="vendor/model-seed0"),
+            _decision(_MASTER_RUN_ID_SEED1, 5, "shared-a", "USDC", "neg-seed1", actual_model="vendor/model-seed1"),
+            _decision(_MASTER_RUN_ID_SEED1, 5, "shared-b", "USDC", "neg-seed1", actual_model="vendor/model-seed1"),
+        ]
+    )
+    session.commit()
+
+    df = build_h5_dataset(session)
+
+    assert len(df) == 2
+    assert set(df["actual_model"]) == {"vendor/model-seed0"}
+    assert sorted(df["agent_id"]) == ["shared-a", "shared-b"]
 
 
 def test_regress_h5_returns_a_regression_result():
