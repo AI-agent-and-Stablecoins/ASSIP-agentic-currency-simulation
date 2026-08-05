@@ -530,6 +530,7 @@ def run_matrix(
     mock_llm_decision: dict | None = None,
     checkpoint_dir: Path | None = None,
     llm_max_workers: int = 1,
+    cell_keys: list[str] | None = None,
 ) -> tuple[list[MatrixCellResult], list[tuple[str, int, Exception]]]:
     """Run the 13-cell x `seeds` experiment matrix for `num_days` days each.
 
@@ -596,6 +597,15 @@ def run_matrix(
     cells/seeds) WILL collide again; that is intentional, not a bug, since
     "resume under this exact id" implies the caller wants the collision (or
     is retrying against an empty/rolled-back database).
+
+    `cell_keys`, if given, restricts this call to only the cells whose
+    `_CellSpec.key` is in the list (e.g. `["master",
+    "liquidity_vs_governance_domestic"]`) -- every other cell is skipped
+    entirely, as if it didn't exist in `_build_cell_specs()`'s output.
+    `None` (the default) runs all 13 cells, unchanged. This exists so a
+    caller can partition the full matrix across separate processes/
+    machines (see Plan 6a's cross-process orchestrator), each restricted
+    to a disjoint subset of cell_keys against the same shared database.
     """
     if not dry_run and (openrouter_client is None or polygon_client is None):
         raise ValueError(
@@ -662,7 +672,14 @@ def run_matrix(
     results: list[MatrixCellResult] = []
     failures: list[tuple[str, int, Exception]] = []
 
-    for spec in _build_cell_specs():
+    all_specs = _build_cell_specs()
+    specs_to_run = all_specs if cell_keys is None else [s for s in all_specs if s.key in cell_keys]
+    if cell_keys is not None:
+        unknown = set(cell_keys) - {s.key for s in all_specs}
+        if unknown:
+            raise ValueError(f"cell_keys contains unknown cell key(s): {sorted(unknown)}")
+
+    for spec in specs_to_run:
         config_hash = compute_config_hash(_config_paths_for(spec))
         cell_scenario = base_scenario if spec.sandbox_key is None else sandbox_scenarios[spec.sandbox_key]
 

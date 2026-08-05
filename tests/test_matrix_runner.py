@@ -81,6 +81,19 @@ def test_run_matrix_produces_13_cells_per_seed():
         assert seeds_seen == {0, 1}
 
 
+def test_cell_keys_restricts_which_cells_run():
+    results, failures = run_matrix(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[0],
+        num_days=2,
+        dry_run=True,
+        session=_session(),
+        cell_keys=["master", "liquidity_vs_governance_domestic"],
+    )
+    assert failures == []
+    assert {r.cell_key for r in results} == {"master", "liquidity_vs_governance_domestic"}
+
+
 def test_run_matrix_refuses_dry_run_false_without_any_real_clients():
     with pytest.raises(ValueError):
         run_matrix(model_candidates=MODEL_CANDIDATES, seeds=[0], num_days=1, dry_run=False, session=_session())
