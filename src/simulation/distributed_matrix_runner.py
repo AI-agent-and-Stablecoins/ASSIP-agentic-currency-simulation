@@ -90,13 +90,19 @@ def _run_cell_group(
         # busy_timeout FIRST, then journal_mode -- the WAL conversion itself
         # briefly needs exclusive file access, so as the first statement on a
         # fresh connection it could raise an uncaught "database is locked"
-        # while a sibling worker process was mid-connect. See the identical
-        # ordering (and fuller explanation) in database/session.py.
+        # while a sibling worker process was mid-connect. busy_timeout alone
+        # doesn't cover that specific race (it's a different SQLite error
+        # class than ordinary lock waits) -- see
+        # `database.session._set_journal_mode_wal_with_retry`'s docstring for
+        # the confirmed failure mode and why the retry there is reused here
+        # rather than duplicated.
         if not database_url.startswith("sqlite"):
             return
+        from database.session import _set_journal_mode_wal_with_retry
+
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA busy_timeout=30000")
-        cursor.execute("PRAGMA journal_mode=WAL")
+        _set_journal_mode_wal_with_retry(cursor)
         cursor.close()
 
     # Checked here, not just inside `run_matrix`, so a stale database aborts

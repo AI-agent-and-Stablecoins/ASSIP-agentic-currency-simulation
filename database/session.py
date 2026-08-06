@@ -6,6 +6,8 @@ changing .env, not code.
 """
 
 import os
+import sqlite3
+import time
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, event
@@ -19,6 +21,39 @@ DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
 
 _engine = create_engine(DATABASE_URL, echo=False)
 
+_WAL_CONVERSION_MAX_ATTEMPTS = 8
+_WAL_CONVERSION_BASE_DELAY_SECONDS = 0.05
+
+
+def _set_journal_mode_wal_with_retry(cursor) -> None:
+    """`PRAGMA journal_mode=WAL`'s one-time conversion of a database file
+    that isn't already in WAL mode needs a brief exclusive lock on the
+    file itself. Two processes opening their first-ever connection to the
+    same freshly-created file at close to the same instant can collide on
+    that lock -- and this specific collision surfaces as
+    `sqlite3.OperationalError: database is locked` (SQLite's `SQLITE_LOCKED`,
+    a schema-level lock), NOT `SQLITE_BUSY`. `busy_timeout` (set on the
+    same connection, in the same pragma statement sequence) only retries
+    `SQLITE_BUSY` waits -- it does nothing for this error class, confirmed
+    by direct reproduction: this exact statement failed near-instantly
+    (not after the 30s busy_timeout window) in roughly 2 of 6 runs of a
+    two-process test before this retry loop was added. Once any connection
+    has successfully converted the file to WAL, every later connection's
+    identical PRAGMA is a fast, lock-free no-op (querying the
+    already-current mode), so only that first race is ever actually hit.
+    """
+    last_error: sqlite3.OperationalError | None = None
+    for attempt in range(_WAL_CONVERSION_MAX_ATTEMPTS):
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower():
+                raise
+            last_error = exc
+            time.sleep(_WAL_CONVERSION_BASE_DELAY_SECONDS * (2**attempt))
+    raise last_error
+
 
 @event.listens_for(_engine, "connect")
 def _set_sqlite_pragmas(dbapi_connection, connection_record) -> None:
@@ -31,20 +66,18 @@ def _set_sqlite_pragmas(dbapi_connection, connection_record) -> None:
     DB-API module, which is what dbapi_connection is when DATABASE_URL
     points at a .db file).
 
-    Pragma ORDER matters: busy_timeout must be set FIRST. The
-    journal_mode=WAL conversion itself briefly needs exclusive access to the
-    database file, so running it as the very first statement on a fresh
-    connection left it unprotected -- with two worker processes opening
-    connections at the same time, one of them could get an uncaught
-    `sqlite3.OperationalError: database is locked` out of the WAL pragma
-    before any busy_timeout was in effect. Setting busy_timeout first means
-    the WAL conversion gets the same 30s retry protection as every
-    subsequent statement."""
+    Pragma ORDER matters: busy_timeout must be set FIRST, so every
+    statement after it (including the WAL conversion below) gets that
+    protection for ordinary SQLITE_BUSY lock waits. That alone is NOT
+    sufficient for the WAL conversion's own one-time race, which raises a
+    different error class (SQLITE_LOCKED) busy_timeout doesn't cover --
+    see `_set_journal_mode_wal_with_retry`'s docstring for the confirmed
+    failure mode and why a manual retry is needed on top of busy_timeout."""
     if not DATABASE_URL.startswith("sqlite"):
         return
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA busy_timeout=30000")
-    cursor.execute("PRAGMA journal_mode=WAL")
+    _set_journal_mode_wal_with_retry(cursor)
     cursor.close()
 
 
