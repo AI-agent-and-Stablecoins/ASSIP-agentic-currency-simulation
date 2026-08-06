@@ -35,6 +35,41 @@ class ReliabilityChain(BaseModel):
     fallbacks: list[str]
 
 
+class LLMUsage(BaseModel):
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+    def __add__(self, other: "LLMUsage") -> "LLMUsage":
+        return LLMUsage(
+            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
+            completion_tokens=self.completion_tokens + other.completion_tokens,
+            total_tokens=self.total_tokens + other.total_tokens,
+        )
+
+
+_cumulative_usage = LLMUsage()
+
+
+def get_cumulative_usage() -> LLMUsage:
+    return _cumulative_usage.model_copy()
+
+
+def reset_cumulative_usage() -> None:
+    global _cumulative_usage
+    _cumulative_usage = LLMUsage()
+
+
+def _parse_usage(response: httpx.Response) -> LLMUsage:
+    body = response.json()
+    usage_block = body.get("usage") or {}
+    return LLMUsage(
+        prompt_tokens=usage_block.get("prompt_tokens", 0),
+        completion_tokens=usage_block.get("completion_tokens", 0),
+        total_tokens=usage_block.get("total_tokens", 0),
+    )
+
+
 class ModelComparisonPolicy(BaseModel):
     pinned_models: list[str]
 
@@ -170,6 +205,7 @@ def call_model(
     caller (src/llm/agent_reasoning.py) knows the wallet/currency/chain
     constraints a Decision must satisfy.
     """
+    global _cumulative_usage
     retry_config = retry_config or RetryConfig()
     messages = [{"role": "user", "content": prompt}]
     last_error = "unknown error"
@@ -196,7 +232,9 @@ def call_model(
             raise ModelCallFailedError(model_id, f"unexpected HTTP {response.status_code}")
 
         try:
-            return _parse_decision(response)
+            decision = _parse_decision(response)
+            _cumulative_usage = _cumulative_usage + _parse_usage(response)
+            return decision
         except (KeyError, IndexError, ValueError) as exc:
             repair_messages = messages + [
                 {"role": "assistant", "content": response.text},
@@ -210,7 +248,9 @@ def call_model(
             ]
             try:
                 repair_response = _post_chat_completion(client, model_id, repair_messages)
-                return _parse_decision(repair_response)
+                repaired_decision = _parse_decision(repair_response)
+                _cumulative_usage = _cumulative_usage + _parse_usage(repair_response)
+                return repaired_decision
             except (KeyError, IndexError, ValueError) as repair_exc:
                 last_error = f"malformed output, repair failed: {repair_exc}"
                 retry_config.sleep_fn(retry_config.backoff_base_seconds * (2**attempt))

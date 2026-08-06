@@ -286,7 +286,7 @@ from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
 from src.economy.sandbox_scenarios import build_sandbox_scenario
 from src.economy.shocks import ScenarioConfig, load_scenario
 from src.llm.agent_reasoning import PROMPT_VERSIONS, hash_rendered_prompt
-from src.llm.llm_router import verify_model_candidates
+from src.llm.llm_router import LLMUsage, get_cumulative_usage, verify_model_candidates
 from src.market.marketplace import Listing, Marketplace
 from src.simulation.environment import Environment
 from src.simulation.provenance import compute_config_hash, compute_git_commit_hash, model_roster_summary_for
@@ -531,6 +531,7 @@ def run_matrix(
     checkpoint_dir: Path | None = None,
     llm_max_workers: int = 1,
     cell_keys: list[str] | None = None,
+    usage_callback: Callable[[str, int, int, LLMUsage], None] | None = None,
 ) -> tuple[list[MatrixCellResult], list[tuple[str, int, Exception]]]:
     """Run the 13-cell x `seeds` experiment matrix for `num_days` days each.
 
@@ -554,6 +555,15 @@ def run_matrix(
     `progress_callback`, if given, is called once per simulated day as
     `progress_callback(cell_key, seed, day)`, right after that day's
     `persist_full_timestep`. `None` (the default) is a no-op.
+
+    `usage_callback`, if given, is called once per simulated day (same
+    timing as `progress_callback`) as `usage_callback(cell_key, seed, day,
+    cumulative_usage)`, where `cumulative_usage` is
+    `src.llm.llm_router.get_cumulative_usage()`'s snapshot at that point --
+    the running token total across every LLM call made by this run_matrix
+    invocation so far, letting a caller driving a long real run log/display
+    spend visibility without polling anything itself. `None` (the default)
+    is a no-op, same as `progress_callback`.
 
     `exercise_llm_path` (default `False`) only matters when `dry_run=True`:
     when both are `True`, `run_matrix` builds mock OpenRouter/Polygon
@@ -818,6 +828,8 @@ def run_matrix(
                     persist_full_timestep(session, env, result, run_id=run_id)
                     if progress_callback is not None:
                         progress_callback(spec.key, seed, day)
+                    if usage_callback is not None:
+                        usage_callback(spec.key, seed, day, get_cumulative_usage())
                     num_days_completed += 1
                     total_transactions += len(result.transactions)
                     total_llm_decisions += len(result.llm_decisions)

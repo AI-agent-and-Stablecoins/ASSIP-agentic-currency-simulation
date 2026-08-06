@@ -13,7 +13,9 @@ from src.llm.llm_router import (
     RetryConfig,
     call_model,
     call_with_fallback_chain,
+    get_cumulative_usage,
     load_model_roster,
+    reset_cumulative_usage,
     verify_model_roster,
 )
 
@@ -86,6 +88,35 @@ def _decision_json(action: str = "OFFER") -> str:
 
 def _chat_response(content: str) -> dict:
     return {"choices": [{"message": {"content": content}}]}
+
+
+def _mock_client_with_usage(prompt_tokens: int, completion_tokens: int, total_tokens: int) -> httpx.Client:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _chat_response(_decision_json())
+        body["usage"] = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
+        return httpx.Response(200, json=body)
+
+    return httpx.Client(base_url=OPENROUTER_BASE_URL, transport=httpx.MockTransport(handler))
+
+
+def test_call_model_captures_token_usage_and_accumulates_across_calls():
+    reset_cumulative_usage()
+    client = _mock_client_with_usage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
+
+    call_model("some prompt", "vendor/fake-model", client)
+
+    usage = get_cumulative_usage()
+    assert usage.prompt_tokens == 100
+    assert usage.completion_tokens == 50
+    assert usage.total_tokens == 150
+
+    call_model("some prompt", "vendor/fake-model", client)
+    usage_after_second_call = get_cumulative_usage()
+    assert usage_after_second_call.total_tokens == 300
 
 
 def test_call_model_succeeds_on_first_try():

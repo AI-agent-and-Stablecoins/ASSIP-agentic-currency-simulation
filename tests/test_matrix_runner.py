@@ -799,3 +799,25 @@ def test_resuming_the_whole_matrix_only_redoes_the_failed_cell_seed(tmp_path, mo
     # first call, days 1-2 from the second), scoped under one run_id.
     master_run_id = f"{matrix_run_id}-master-seed0"
     assert session.query(TimestepLogRecord).filter(TimestepLogRecord.run_id == master_run_id).count() == 3
+
+
+def test_usage_callback_is_called_once_per_day_with_cumulative_usage():
+    session = _session()
+    calls = []
+
+    run_matrix(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[0],
+        num_days=2,
+        dry_run=True,
+        session=session,
+        usage_callback=lambda cell_key, seed, day, usage: calls.append((cell_key, seed, day)),
+    )
+
+    # dry_run=True with no exercise_llm_path never calls the LLM router at
+    # all (rule-based path), so usage_callback still fires once per day
+    # per cell/seed -- it just always reports zero cumulative usage in
+    # that mode. This test only asserts the callback fires with the right
+    # cadence, not that usage is nonzero (that's exercised at the
+    # call_model level in tests/test_llm_router.py).
+    assert len(calls) == 13 * 1 * 2  # 13 cells x 1 seed x 2 days
