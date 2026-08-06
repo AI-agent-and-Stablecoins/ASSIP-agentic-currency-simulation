@@ -97,11 +97,11 @@ def test_run_cell_group_sanitizes_an_unpicklable_failure_without_losing_group_ma
     Base.metadata.create_all(engine)
 
     all_cell_keys = [spec.key for spec in matrix_runner_module._build_cell_specs()]
+    cell_seed_pairs = [(cell_key, 0) for cell_key in all_cell_keys]
 
-    results, failures = _run_cell_group(
-        cell_keys=all_cell_keys,
+    results, failures, usage = _run_cell_group(
+        cell_seed_pairs=cell_seed_pairs,
         model_candidates=MODEL_CANDIDATES,
-        seeds=[0],
         num_days=1,
         dry_run=True,
         database_url=f"sqlite:///{db_path}",
@@ -142,3 +142,109 @@ def test_run_cell_group_sanitizes_an_unpicklable_failure_without_losing_group_ma
     assert len(roundtripped_results) == 12
     assert roundtripped_failures[0][0] == "master"
     assert isinstance(roundtripped_failures[0][2], RuntimeError)
+
+
+def test_run_matrix_distributed_partitions_the_full_cell_seed_cross_product(tmp_path):
+    """Regression test for a whole-branch review finding: partitioning must
+    split the full 13-cell x N-seed cross product, not just cell keys with
+    the same seed list applied to every one -- the latter caps useful
+    `num_processes` at 13 and wastes wall-clock time whenever the cell
+    count doesn't divide evenly. With 2 seeds x 13 cells = 26 pairs across
+    4 processes, requesting more workers than cells (num_processes=4 <
+    26 pairs, but > 13 cells alone would still have been meaningful) proves
+    the split is over pairs: total result count must be 26, not 13."""
+    db_path = tmp_path / "cross_product_test.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+
+    results, failures = run_matrix_distributed(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[0, 1],
+        num_days=1,
+        dry_run=True,
+        num_processes=4,
+        matrix_run_id="cross-product-test",
+        database_url=f"sqlite:///{db_path}",
+    )
+
+    assert failures == []
+    assert len(results) == 26  # 13 cells x 2 seeds
+    seen_pairs = {(r.cell_key, r.seed) for r in results}
+    assert len(seen_pairs) == 26
+
+
+def test_run_cell_group_survives_one_bad_pair_without_losing_its_group_mates(tmp_path):
+    """Regression test for a whole-branch review finding: before this fix,
+    a single bad `(cell_key, seed)` pair raising an exception that escapes
+    `run_matrix`'s OWN per-cell/seed handling (e.g. its `cell_keys`
+    validation, which deliberately runs before that try/except -- a
+    genuine escape, not a contrived one) would abort `_run_cell_group`'s
+    entire loop, losing every OTHER pair already assigned to that SAME
+    worker, not just the one bad pair.
+
+    Forces this via a real, uncaught `ValueError`: `run_matrix`'s own
+    `cell_keys` validation rejects any key not in its real
+    `_build_cell_specs()` output, so simply including a fabricated,
+    genuinely-unknown key in this worker's `cell_seed_pairs` triggers it
+    naturally -- no monkeypatching needed.
+    """
+    import src.simulation.matrix_runner as matrix_runner_module
+
+    real_specs = matrix_runner_module._build_cell_specs()
+
+    db_path = tmp_path / "bad_pair_test.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+
+    cell_seed_pairs = [("not-a-real-cell-key", 0)] + [(spec.key, 0) for spec in real_specs]
+
+    results, failures, _usage = _run_cell_group(
+        cell_seed_pairs=cell_seed_pairs,
+        model_candidates=MODEL_CANDIDATES,
+        num_days=1,
+        dry_run=True,
+        database_url=f"sqlite:///{db_path}",
+        matrix_run_id="bad-pair-test",
+        llm_max_workers=1,
+        checkpoint_dir=None,
+        openrouter_client_factory=None,
+        polygon_client_factory=None,
+    )
+
+    # The bad pair's failure is recorded, not raised -- and it did not
+    # abort the rest of this worker's assigned pairs.
+    assert any(cell_key == "not-a-real-cell-key" for cell_key, _, _ in failures)
+    assert len(results) == 13
+    assert {r.cell_key for r in results} == {spec.key for spec in real_specs}
+
+
+def test_run_matrix_distributed_calls_usage_callback_once_per_completed_worker_group(tmp_path):
+    """Regression test for a whole-branch review finding (C1): the
+    distributed runner had no way to see LLM spend at all -- `_cumulative_
+    usage` is a per-process module global, so a worker's accumulated usage
+    never reached the parent process unless the worker handed it back
+    explicitly. `usage_callback` is called once per completed worker group
+    (not per simulated day, unlike `run_matrix`'s own `usage_callback`),
+    since a worker's usage isn't visible to the parent until that worker's
+    whole group finishes."""
+    db_path = tmp_path / "usage_callback_test.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+    calls = []
+
+    run_matrix_distributed(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[0],
+        num_days=1,
+        dry_run=True,
+        num_processes=2,
+        matrix_run_id="usage-callback-test",
+        database_url=f"sqlite:///{db_path}",
+        usage_callback=lambda usage: calls.append(usage),
+    )
+
+    # One call per completed group (2 processes requested for 13 cells ->
+    # 2 groups, per _partition's ceiling-division chunking).
+    assert len(calls) == 2
+    for usage in calls:
+        assert hasattr(usage, "total_tokens")

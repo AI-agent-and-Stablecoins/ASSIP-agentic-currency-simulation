@@ -118,7 +118,9 @@ seller's wallet balance (non-atomic read-modify-write in
 
 ### 2.1 Within-day parallelism
 
-Split each simulated day into two phases:
+**Revised during implementation from a literal two-phase split to a
+lock-based design — see the "Implementation note" below for why, and the
+reproducibility trade-off it carries.** Originally specified as:
 
 1. **Parallel decision phase** — a thread pool (these are I/O-bound
    network calls to OpenRouter, not CPU-bound work, so threads are
@@ -138,6 +140,36 @@ Split each simulated day into two phases:
 Existing retry/backoff logic for OpenRouter 429s
 (`src/llm/llm_router.py`'s `RetryConfig`) is reused as-is inside each
 thread's call — no changes needed there.
+
+**Implementation note (found during a whole-branch review, resolved with
+the project owner):** a literal two-phase split would have changed
+existing simulation behavior — a single buyer's multiple goods within one
+day are processed sequentially today because that buyer's OWN wallet
+balance carries from one good to the next (read for candidate generation
+and shown in that buyer's own LLM prompt). Deferring ALL settlement to a
+separate serial phase after EVERY buyer's decisions were computed would
+have broken that intra-buyer dependency. What was actually built instead:
+each buyer's full per-day work runs as one unit on a worker thread
+(`_process_buyer_llm_day`, `src/simulation/timestep.py`), with settlement
+happening inline, inside that thread, under a single shared
+`threading.Lock` — proven safe by a structural fact independently
+verified during review (buyers and sellers are disjoint agent-class sets,
+so a buyer's wallet is only ever touched by its own thread as payer, and
+every seller-wallet write goes through the lock).
+
+**Reproducibility trade-off, explicitly accepted (2026-08-05):** because
+settlement happens inside worker threads rather than a separate
+deterministic serial phase, a seller's wallet balance shown in a
+DIFFERENT buyer's concurrently-running prompt can reflect a different
+mid-day state depending on thread-scheduling order. The same seed with
+`llm_max_workers>1` is therefore not guaranteed to produce byte-identical
+LLM inputs (and thus results) across repeated runs — a trade accepted in
+favor of the speed this branch exists to deliver, given real LLM API
+responses are already not perfectly reproducible run-to-run regardless.
+`llm_max_workers`/`num_processes` are not currently recorded in run
+provenance (`SimulationRunRecord`); a future run wanting to compare two
+attempts under the same seed should be aware neither setting is
+recoverable from the database today.
 
 ### 2.2 Cross-cell/seed parallelism
 

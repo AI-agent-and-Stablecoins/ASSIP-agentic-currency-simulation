@@ -124,9 +124,8 @@ def test_run_cell_group_fails_fast_on_a_stale_database(tmp_path):
 
     with pytest.raises(RuntimeError, match="run_id"):
         _run_cell_group(
-            cell_keys=["master"],
+            cell_seed_pairs=[("master", 0)],
             model_candidates=MODEL_CANDIDATES,
-            seeds=[0],
             num_days=1,
             dry_run=True,
             database_url=f"sqlite:///{db_path}",

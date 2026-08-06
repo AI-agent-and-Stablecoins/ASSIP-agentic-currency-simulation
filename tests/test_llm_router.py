@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
@@ -117,6 +118,37 @@ def test_call_model_captures_token_usage_and_accumulates_across_calls():
     call_model("some prompt", "vendor/fake-model", client)
     usage_after_second_call = get_cumulative_usage()
     assert usage_after_second_call.total_tokens == 300
+
+
+def test_call_model_accumulates_usage_correctly_under_real_thread_concurrency():
+    """Regression test for a real, measured race: `_cumulative_usage`'s
+    accumulate is a read-modify-write on a module global, and `call_model`
+    runs concurrently across worker threads whenever `run_timestep
+    (max_workers>1)` is in effect (Plan 6a). Without a lock around the
+    accumulate, 16 threads x 200 calls each measurably lost ~2.5% of
+    total_tokens to lost updates. This drives real concurrent load through
+    call_model (not a direct call to the internal accumulator) so it fails
+    if the lock is ever removed."""
+    reset_cumulative_usage()
+    client = _mock_client_with_usage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+
+    num_threads = 16
+    calls_per_thread = 50
+
+    def _make_calls():
+        for _ in range(calls_per_thread):
+            call_model("some prompt", "vendor/fake-model", client)
+
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [executor.submit(_make_calls) for _ in range(num_threads)]
+        for future in futures:
+            future.result()
+
+    expected_total_calls = num_threads * calls_per_thread
+    usage = get_cumulative_usage()
+    assert usage.total_tokens == expected_total_calls * 15
+    assert usage.prompt_tokens == expected_total_calls * 10
+    assert usage.completion_tokens == expected_total_calls * 5
 
 
 def test_call_model_succeeds_on_first_try():

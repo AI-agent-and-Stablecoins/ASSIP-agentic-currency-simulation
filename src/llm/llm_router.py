@@ -8,6 +8,7 @@ OpenRouter preflight check here; the actual chat-completion call, retry,
 and fallback-chain logic are added in Tasks 9-10.
 """
 
+import threading
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,15 +50,34 @@ class LLMUsage(BaseModel):
 
 
 _cumulative_usage = LLMUsage()
+_cumulative_usage_lock = threading.Lock()
 
 
 def get_cumulative_usage() -> LLMUsage:
-    return _cumulative_usage.model_copy()
+    with _cumulative_usage_lock:
+        return _cumulative_usage.model_copy()
 
 
 def reset_cumulative_usage() -> None:
     global _cumulative_usage
-    _cumulative_usage = LLMUsage()
+    with _cumulative_usage_lock:
+        _cumulative_usage = LLMUsage()
+
+
+def _record_usage(response: httpx.Response) -> None:
+    """Accumulates one response's usage into `_cumulative_usage` under
+    `_cumulative_usage_lock` -- `call_model` runs concurrently across
+    worker threads when `run_timestep(max_workers>1)` is in effect
+    (Plan 6a), and the read-modify-write this does (`_cumulative_usage +
+    _parse_usage(response)`) is not atomic without the lock: measured
+    directly, 16 threads x 200 calls lost ~2.5% of total_tokens to a lost
+    update before this lock was added. Records only SUCCESSFUL parses --
+    a call that exhausts retries or fails repair records nothing, so this
+    total is a lower bound on tokens actually billed, not an exact count."""
+    global _cumulative_usage
+    usage = _parse_usage(response)
+    with _cumulative_usage_lock:
+        _cumulative_usage = _cumulative_usage + usage
 
 
 def _parse_usage(response: httpx.Response) -> LLMUsage:
@@ -205,7 +225,6 @@ def call_model(
     caller (src/llm/agent_reasoning.py) knows the wallet/currency/chain
     constraints a Decision must satisfy.
     """
-    global _cumulative_usage
     retry_config = retry_config or RetryConfig()
     messages = [{"role": "user", "content": prompt}]
     last_error = "unknown error"
@@ -233,7 +252,7 @@ def call_model(
 
         try:
             decision = _parse_decision(response)
-            _cumulative_usage = _cumulative_usage + _parse_usage(response)
+            _record_usage(response)
             return decision
         except (KeyError, IndexError, ValueError) as exc:
             repair_messages = messages + [
@@ -249,7 +268,7 @@ def call_model(
             try:
                 repair_response = _post_chat_completion(client, model_id, repair_messages)
                 repaired_decision = _parse_decision(repair_response)
-                _cumulative_usage = _cumulative_usage + _parse_usage(repair_response)
+                _record_usage(repair_response)
                 return repaired_decision
             except (KeyError, IndexError, ValueError) as repair_exc:
                 last_error = f"malformed output, repair failed: {repair_exc}"

@@ -265,6 +265,18 @@ function's docstring. Values above 1 parallelize LLM negotiation calls
 across buyers within each simulated day; this is the mechanism Plan 6a
 adds to make a 365-day x 3-seed x 13-cell real run feasible in
 wall-clock time.
+
+Reproducibility caveat (`llm_max_workers > 1`): settlement happens inside
+worker threads under a shared lock, not in a separate deterministic
+serial phase (see the Plan 6 design spec Sec 2.1's "Implementation note"
+for why and the trade-off accepted). A seller's wallet balance shown in a
+concurrently-running buyer's own prompt can vary with thread-scheduling
+order, so the SAME seed is not guaranteed to reproduce byte-identical LLM
+inputs/results run-to-run once concurrency is enabled. Neither
+`llm_max_workers` nor `distributed_matrix_runner.run_matrix_distributed`'s
+`num_processes` is currently recorded on `SimulationRunRecord` -- a run
+that needs to compare two attempts under the same seed should record
+these settings itself, since they are not recoverable from the database.
 """
 
 import pickle
