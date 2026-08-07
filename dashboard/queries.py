@@ -26,7 +26,14 @@ def _parse_run_id(run_id: str, matrix_run_id: str) -> tuple[str, int] | None:
     """Splits f"{matrix_run_id}-{cell_key}-seed{seed}" back into
     (cell_key, seed). Returns None if run_id doesn't start with this
     matrix_run_id's prefix (a different run_matrix invocation sharing the
-    same database) or doesn't match the expected "-seed{N}" suffix shape."""
+    same database) or doesn't match the expected "-seed{N}" suffix shape.
+
+    Known accepted limitation (documented, not a bug): if one matrix_run_id
+    is an exact hyphen-boundary string-prefix of another (e.g. "run" and
+    "run-b"), prefix-matching alone cannot distinguish them without schema
+    changes. This is not a real issue in current usage since matrix_run_id
+    values are either UUID-hex strings with no hyphens or user-chosen strings
+    unlikely to collide at prefix boundaries."""
     prefix = f"{matrix_run_id}-"
     if not run_id.startswith(prefix):
         return None
@@ -40,10 +47,12 @@ def _parse_run_id(run_id: str, matrix_run_id: str) -> tuple[str, int] | None:
 
 
 def get_progress_for_run(session: Session, matrix_run_id: str) -> list[CellSeedProgress]:
+    # Escape any literal % or _ characters in matrix_run_id so they don't act as SQL LIKE wildcards
+    escaped_id = matrix_run_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     run_ids = [
         row[0]
         for row in session.query(TimestepLogRecord.run_id)
-        .filter(TimestepLogRecord.run_id.like(f"{matrix_run_id}-%"))
+        .filter(TimestepLogRecord.run_id.like(f"{escaped_id}-%", escape="\\"))
         .distinct()
         .all()
     ]

@@ -67,3 +67,42 @@ def test_get_progress_for_run_only_includes_this_matrix_run_ids_rows():
     progress_a = get_progress_for_run(session, "run-a")
     assert len(progress_a) == 1
     assert progress_a[0].run_id == "run-a-master-seed0"
+
+
+def test_get_progress_for_run_escapes_like_wildcards():
+    """Verify that % and _ characters in matrix_run_id are treated as literals,
+    not SQL LIKE wildcards. Without escaping, a matrix_run_id like 'test_%run'
+    would match 'test-arun' due to _ being a LIKE wildcard."""
+    session = _session()
+    # Create a run with underscore in its ID
+    run_matrix(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[0],
+        num_days=1,
+        dry_run=True,
+        session=session,
+        matrix_run_id="test_%run",
+        cell_keys=["master"],
+    )
+    # Create another run whose ID would match the naive wildcard interpretation
+    # (test_ matches "test_", then % matches any characters "a", then run matches "run")
+    run_matrix(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[0],
+        num_days=1,
+        dry_run=True,
+        session=session,
+        matrix_run_id="test-arun",
+        cell_keys=["master"],
+    )
+
+    # Query for the run with wildcards in its name
+    progress_with_wildcard = get_progress_for_run(session, "test_%run")
+    # Should only get 1 result from the first run, not both
+    assert len(progress_with_wildcard) == 1
+    assert progress_with_wildcard[0].run_id == "test_%run-master-seed0"
+
+    # Query for the second run to confirm it was created
+    progress_second = get_progress_for_run(session, "test-arun")
+    assert len(progress_second) == 1
+    assert progress_second[0].run_id == "test-arun-master-seed0"
