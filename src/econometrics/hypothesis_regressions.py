@@ -12,11 +12,11 @@ from src.econometrics.hypothesis_datasets import (
     build_h3_dataset,
     build_h4_dataset,
     build_h5_dataset,
-    build_h6_dataset,
     build_h7_dataset,
     build_h8_dataset,
     build_h9_dataset,
     build_h10_dataset,
+    build_h11_dataset,
 )
 from src.econometrics.regression_engine import RegressionResult, fit_clustered_logit
 
@@ -81,18 +81,6 @@ def regress_h5(session: Session, matrix_run_id: str | None = None) -> Regression
     )
 
 
-def regress_h6(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> RegressionResult:
-    df = build_h6_dataset(session, cell_variant=cell_variant, matrix_run_id=matrix_run_id)
-    return fit_clustered_logit(
-        hypothesis=f"H6_{cell_variant}",
-        df=df,
-        dependent_col="chose_higher_option",
-        regressor_col="cara_a",
-        cluster_col="agent_id",
-        fixed_effect_cols=["agent_type", "actual_model"],
-    )
-
-
 def regress_h7(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> RegressionResult:
     df = build_h7_dataset(session, cell_variant=cell_variant, matrix_run_id=matrix_run_id)
     return fit_clustered_logit(
@@ -133,6 +121,18 @@ def regress_h10(session: Session, cell_variant: str, matrix_run_id: str | None =
     df = build_h10_dataset(session, cell_variant=cell_variant, matrix_run_id=matrix_run_id)
     return fit_clustered_logit(
         hypothesis=f"H10_{cell_variant}",
+        df=df,
+        dependent_col="chose_higher_option",
+        regressor_col="cara_a",
+        cluster_col="agent_id",
+        fixed_effect_cols=["agent_type", "actual_model"],
+    )
+
+
+def regress_h11(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> RegressionResult:
+    df = build_h11_dataset(session, cell_variant=cell_variant, matrix_run_id=matrix_run_id)
+    return fit_clustered_logit(
+        hypothesis=f"H11_{cell_variant}",
         df=df,
         dependent_col="chose_higher_option",
         regressor_col="cara_a",

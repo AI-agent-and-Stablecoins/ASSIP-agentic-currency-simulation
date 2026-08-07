@@ -456,9 +456,9 @@ def build_sandbox_preference_dataset(
     cell_variant: str,
     matrix_run_id: str | None = None,
 ) -> pd.DataFrame:
-    """Shared H6-H10 dataset builder (Plan 6b): per-decision logit sample
+    """Shared H7-H11 dataset builder (Plan 6b): per-decision logit sample
     for exactly ONE of a sandbox's two cells (domestic XOR cross_border --
-    unlike H3, which pools both with a cell_key fixed effect; H6-H10 report
+    unlike H3, which pools both with a cell_key fixed effect; H7-H11 report
     each cell variant separately per the Plan 6 design spec Sec 1). One row
     per eligible LLMDecisionRecord: `chose_higher_option=1` if the agent's
     proposed currency is `higher_option_selector`'s pick, `0` if it's the
@@ -503,8 +503,8 @@ def build_sandbox_preference_dataset(
     return _join_cara_a(session, df)
 
 
-def build_h6_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
-    """H6: higher CARA `a` -> prioritizes peg stability (lower peg_error)
+def build_h7_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
+    """H7: higher CARA `a` -> prioritizes peg stability (lower peg_error)
     over governance/compliance. governance_vs_stability sandbox."""
     return build_sandbox_preference_dataset(
         session,
@@ -515,8 +515,8 @@ def build_h6_dataset(session: Session, cell_variant: str, matrix_run_id: str | N
     )
 
 
-def build_h7_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
-    """H7: higher CARA `a` -> prioritizes peg stability over liquidity.
+def build_h8_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
+    """H8: higher CARA `a` -> prioritizes peg stability over liquidity.
     liquidity_vs_stability sandbox."""
     return build_sandbox_preference_dataset(
         session,
@@ -527,8 +527,8 @@ def build_h7_dataset(session: Session, cell_variant: str, matrix_run_id: str | N
     )
 
 
-def build_h8_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
-    """H8: higher CARA `a` -> prioritizes gold/hard-asset backing over
+def build_h9_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
+    """H9: higher CARA `a` -> prioritizes gold/hard-asset backing over
     liquidity. asset_backing_vs_liquidity sandbox (static baseline
     preference, not crisis-proximity-driven like H4)."""
     return build_sandbox_preference_dataset(
@@ -540,8 +540,8 @@ def build_h8_dataset(session: Session, cell_variant: str, matrix_run_id: str | N
     )
 
 
-def build_h9_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
-    """H9: higher CARA `a` -> prioritizes the FDIC-insured deposit option
+def build_h10_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
+    """H10: higher CARA `a` -> prioritizes the FDIC-insured deposit option
     (better peg + insurance) over gold backing. asset_backing_vs_stability
     sandbox. Lower-confidence hypothesis (approved as-is, see design spec
     Sec 1): this sandbox bundles asset-class AND a large peg_error gap
@@ -555,8 +555,8 @@ def build_h9_dataset(session: Session, cell_variant: str, matrix_run_id: str | N
     )
 
 
-def build_h10_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
-    """H10: higher CARA `a` -> prioritizes governance/compliance quality
+def build_h11_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
+    """H11: higher CARA `a` -> prioritizes governance/compliance quality
     over asset-backing type. asset_backing_vs_governance sandbox.
     Lower-confidence hypothesis (approved as-is, see design spec Sec 1):
     the two options' governance_score (0.75 vs 0.70) and issuer_risk (0.25

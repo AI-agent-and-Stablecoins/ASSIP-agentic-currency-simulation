@@ -6,19 +6,19 @@ from src.currencies.gold_token import GoldBackedConfig
 from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
 from src.currencies.tokenized_deposit import TokenizedDepositConfig
 from src.econometrics.hypothesis_datasets import (
-    build_h6_dataset,
     build_h7_dataset,
     build_h8_dataset,
     build_h9_dataset,
     build_h10_dataset,
+    build_h11_dataset,
     build_sandbox_preference_dataset,
 )
 from src.econometrics.hypothesis_regressions import (
-    regress_h6,
     regress_h7,
     regress_h8,
     regress_h9,
     regress_h10,
+    regress_h11,
 )
 from src.econometrics.regression_engine import RegressionResult
 from src.simulation.matrix_runner import run_matrix
@@ -71,6 +71,13 @@ def test_build_sandbox_preference_dataset_scopes_to_exactly_one_cell_variant():
 
 
 def test_build_sandbox_preference_dataset_domestic_and_cross_border_are_disjoint_cells():
+    """Regression test for a Plan 6b whole-branch review finding: the
+    original version of this test only asserted both frames were
+    non-empty, which would still pass even if `cell_variant` scoping were
+    broken and both frames were pooling the same rows -- the disjointness
+    claim in the name was never actually checked. This asserts genuine
+    row-level disjointness via each row's `run_id`, which is retained in
+    both frames."""
     option_a, option_b = SANDBOX_CURRENCY_PAIRS["governance_vs_stability"]
     session = _populated_session("governance_vs_stability", option_a.symbol)
 
@@ -87,11 +94,15 @@ def test_build_sandbox_preference_dataset_domestic_and_cross_border_are_disjoint
         cell_variant="cross_border",
     )
 
-    # Both non-empty (the mock forces the same decision across all 13 cells),
-    # but no overlap in the underlying run/timestep/agent rows -- confirmed
-    # indirectly by both being scoped to their own distinct cell.
     assert not domestic_df.empty
     assert not cross_border_df.empty
+    domestic_run_ids = set(domestic_df["run_id"])
+    cross_border_run_ids = set(cross_border_df["run_id"])
+    assert domestic_run_ids.isdisjoint(cross_border_run_ids)
+    # run_id is f"{matrix_run_id}-{cell_key}-seed{seed}" (matrix_runner.py),
+    # so the cell-key segment is a substring, not a suffix.
+    assert all("_domestic-seed" in run_id for run_id in domestic_run_ids)
+    assert all("_cross_border-seed" in run_id for run_id in cross_border_run_ids)
 
 
 def test_build_sandbox_preference_dataset_rejects_unknown_cell_variant():
@@ -110,17 +121,17 @@ def test_build_sandbox_preference_dataset_rejects_unknown_cell_variant():
         assert "cell_variant" in str(exc)
 
 
-_H6_H10_CASES = [
-    ("governance_vs_stability", build_h6_dataset),
-    ("liquidity_vs_stability", build_h7_dataset),
-    ("asset_backing_vs_liquidity", build_h8_dataset),
-    ("asset_backing_vs_stability", build_h9_dataset),
-    ("asset_backing_vs_governance", build_h10_dataset),
+_H7_H11_CASES = [
+    ("governance_vs_stability", build_h7_dataset),
+    ("liquidity_vs_stability", build_h8_dataset),
+    ("asset_backing_vs_liquidity", build_h9_dataset),
+    ("asset_backing_vs_stability", build_h10_dataset),
+    ("asset_backing_vs_governance", build_h11_dataset),
 ]
 
 
-def test_each_h6_h10_dataset_builder_scopes_to_its_own_sandbox_and_variant():
-    for sandbox_key, builder in _H6_H10_CASES:
+def test_each_h7_h11_dataset_builder_scopes_to_its_own_sandbox_and_variant():
+    for sandbox_key, builder in _H7_H11_CASES:
         option_a, _ = SANDBOX_CURRENCY_PAIRS[sandbox_key]
         session = _populated_session(sandbox_key, option_a.symbol)
 
@@ -132,31 +143,31 @@ def test_each_h6_h10_dataset_builder_scopes_to_its_own_sandbox_and_variant():
         assert set(domestic_df.columns) >= {"agent_id", "chose_higher_option", "cara_a"}
 
 
-def test_h8_selector_picks_the_gold_backed_symbol():
+def test_h9_selector_picks_the_gold_backed_symbol():
     option_a, option_b = SANDBOX_CURRENCY_PAIRS["asset_backing_vs_liquidity"]
     gold_option = option_a if isinstance(option_a, GoldBackedConfig) else option_b
     session = _populated_session("asset_backing_vs_liquidity", gold_option.symbol)
 
-    df = build_h8_dataset(session, cell_variant="domestic")
+    df = build_h9_dataset(session, cell_variant="domestic")
     # Every forced-ACCEPT decision proposed the gold option -> chose_higher_option must be all 1s.
     assert (df["chose_higher_option"] == 1).all()
 
 
-def test_h9_selector_picks_the_deposit_symbol_not_the_gold_symbol():
+def test_h10_selector_picks_the_deposit_symbol_not_the_gold_symbol():
     option_a, option_b = SANDBOX_CURRENCY_PAIRS["asset_backing_vs_stability"]
     deposit_option = option_a if isinstance(option_a, TokenizedDepositConfig) else option_b
     session = _populated_session("asset_backing_vs_stability", deposit_option.symbol)
 
-    df = build_h9_dataset(session, cell_variant="domestic")
+    df = build_h10_dataset(session, cell_variant="domestic")
     assert (df["chose_higher_option"] == 1).all()
 
 
-_H6_H10_REGRESS_CASES = [
-    ("governance_vs_stability", regress_h6, "H6"),
-    ("liquidity_vs_stability", regress_h7, "H7"),
-    ("asset_backing_vs_liquidity", regress_h8, "H8"),
-    ("asset_backing_vs_stability", regress_h9, "H9"),
-    ("asset_backing_vs_governance", regress_h10, "H10"),
+_H7_H11_REGRESS_CASES = [
+    ("governance_vs_stability", regress_h7, "H7"),
+    ("liquidity_vs_stability", regress_h8, "H8"),
+    ("asset_backing_vs_liquidity", regress_h9, "H9"),
+    ("asset_backing_vs_stability", regress_h10, "H10"),
+    ("asset_backing_vs_governance", regress_h11, "H11"),
 ]
 
 
@@ -191,8 +202,8 @@ def _populated_session_with_genuine_variation(sandbox_key: str, num_days: int = 
     return session
 
 
-def test_each_regress_h6_h10_returns_separate_domestic_and_cross_border_results():
-    for sandbox_key, regress_fn, hyp_label in _H6_H10_REGRESS_CASES:
+def test_each_regress_h7_h11_returns_separate_domestic_and_cross_border_results():
+    for sandbox_key, regress_fn, hyp_label in _H7_H11_REGRESS_CASES:
         session = _populated_session_with_genuine_variation(sandbox_key)
 
         domestic_result = regress_fn(session, cell_variant="domestic")
