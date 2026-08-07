@@ -6,12 +6,16 @@ Sec 1 for the exact per-hypothesis data-source/dependent-variable/
 regressor design this implements.
 """
 
+from typing import Callable
+
 import pandas as pd
 from sqlalchemy.orm import Session
 
 from database.models import AgentRecord, AgentStateRecord, InterventionLogRecord, LLMDecisionRecord, TimestepLogRecord
-from src.currencies.currency import load_currency_universe
+from src.currencies.currency import CurrencyConfig, load_currency_universe
+from src.currencies.gold_token import GoldBackedConfig
 from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
+from src.currencies.tokenized_deposit import TokenizedDepositConfig
 from src.econometrics.cell_identity import cell_key_from_run_id
 from src.economy.fx_tax import currency_zone_of
 
@@ -462,4 +466,125 @@ def build_h5_dataset(session: Session, matrix_run_id: str | None = None) -> pd.D
 
     return pd.DataFrame.from_records(
         records, columns=["agent_id", "chose_usd_zone", "eur_usd_volatility", "agent_type", "actual_model"]
+    )
+
+
+def build_sandbox_preference_dataset(
+    session: Session,
+    sandbox_key: str,
+    higher_option_selector: Callable[[CurrencyConfig, CurrencyConfig], str],
+    cell_variant: str,
+    matrix_run_id: str | None = None,
+) -> pd.DataFrame:
+    """Shared H7-H11 dataset builder (Plan 6b): per-decision logit sample
+    for exactly ONE of a sandbox's two cells (domestic XOR cross_border --
+    unlike H3, which pools both with a cell_key fixed effect; H7-H11 report
+    each cell variant separately per the Plan 6 design spec Sec 1). One row
+    per eligible LLMDecisionRecord: `chose_higher_option=1` if the agent's
+    proposed currency is `higher_option_selector`'s pick, `0` if it's the
+    sandbox's other option, excluded entirely if the decision's currency
+    isn't one of this sandbox's two symbols at all.
+
+    `cell_variant` must be `"domestic"` or `"cross_border"` -- any other
+    value raises ValueError immediately (a typo here should never silently
+    return an empty/wrong-cell dataset).
+    """
+    if cell_variant not in ("domestic", "cross_border"):
+        raise ValueError(f"cell_variant must be 'domestic' or 'cross_border', got {cell_variant!r}")
+
+    option_a, option_b = SANDBOX_CURRENCY_PAIRS[sandbox_key]
+    higher_option_symbol = higher_option_selector(option_a, option_b)
+    target_cell_key = f"{sandbox_key}_{cell_variant}"
+
+    query = session.query(LLMDecisionRecord).filter(LLMDecisionRecord.action.in_(_DECIDED_ACTIONS))
+    decisions = [d for d in query.all() if _matches_matrix_run_id(d.simulation_id, matrix_run_id)]
+
+    records = []
+    for decision in decisions:
+        if _safe_cell_key(decision.simulation_id) != target_cell_key:
+            continue
+        if decision.currency not in (option_a.symbol, option_b.symbol):
+            continue
+        records.append(
+            {
+                "run_id": decision.simulation_id,
+                "timestep": decision.timestep,
+                "agent_id": decision.agent_id,
+                "chose_higher_option": 1 if decision.currency == higher_option_symbol else 0,
+                "agent_type": decision.agent_type,
+                "actual_model": decision.actual_model,
+            }
+        )
+
+    df = pd.DataFrame.from_records(
+        records,
+        columns=["run_id", "timestep", "agent_id", "chose_higher_option", "agent_type", "actual_model"],
+    )
+    return _join_cara_a(session, df)
+
+
+def build_h7_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
+    """H7: higher CARA `a` -> prioritizes peg stability (lower peg_error)
+    over governance/compliance. governance_vs_stability sandbox."""
+    return build_sandbox_preference_dataset(
+        session,
+        sandbox_key="governance_vs_stability",
+        higher_option_selector=lambda a, b: a.symbol if a.peg_error <= b.peg_error else b.symbol,
+        cell_variant=cell_variant,
+        matrix_run_id=matrix_run_id,
+    )
+
+
+def build_h8_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
+    """H8: higher CARA `a` -> prioritizes peg stability over liquidity.
+    liquidity_vs_stability sandbox."""
+    return build_sandbox_preference_dataset(
+        session,
+        sandbox_key="liquidity_vs_stability",
+        higher_option_selector=lambda a, b: a.symbol if a.peg_error <= b.peg_error else b.symbol,
+        cell_variant=cell_variant,
+        matrix_run_id=matrix_run_id,
+    )
+
+
+def build_h9_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
+    """H9: higher CARA `a` -> prioritizes gold/hard-asset backing over
+    liquidity. asset_backing_vs_liquidity sandbox (static baseline
+    preference, not crisis-proximity-driven like H4)."""
+    return build_sandbox_preference_dataset(
+        session,
+        sandbox_key="asset_backing_vs_liquidity",
+        higher_option_selector=lambda a, b: a.symbol if isinstance(a, GoldBackedConfig) else b.symbol,
+        cell_variant=cell_variant,
+        matrix_run_id=matrix_run_id,
+    )
+
+
+def build_h10_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
+    """H10: higher CARA `a` -> prioritizes the FDIC-insured deposit option
+    (better peg + insurance) over gold backing. asset_backing_vs_stability
+    sandbox. Lower-confidence hypothesis (approved as-is, see design spec
+    Sec 1): this sandbox bundles asset-class AND a large peg_error gap
+    (0.015 vs 0.0001) in one swap."""
+    return build_sandbox_preference_dataset(
+        session,
+        sandbox_key="asset_backing_vs_stability",
+        higher_option_selector=lambda a, b: a.symbol if isinstance(a, TokenizedDepositConfig) else b.symbol,
+        cell_variant=cell_variant,
+        matrix_run_id=matrix_run_id,
+    )
+
+
+def build_h11_dataset(session: Session, cell_variant: str, matrix_run_id: str | None = None) -> pd.DataFrame:
+    """H11: higher CARA `a` -> prioritizes governance/compliance quality
+    over asset-backing type. asset_backing_vs_governance sandbox.
+    Lower-confidence hypothesis (approved as-is, see design spec Sec 1):
+    the two options' governance_score (0.75 vs 0.70) and issuer_risk (0.25
+    vs 0.20) are close, a subtler contrast than the other pairs."""
+    return build_sandbox_preference_dataset(
+        session,
+        sandbox_key="asset_backing_vs_governance",
+        higher_option_selector=lambda a, b: a.symbol if a.governance_score >= b.governance_score else b.symbol,
+        cell_variant=cell_variant,
+        matrix_run_id=matrix_run_id,
     )

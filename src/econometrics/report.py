@@ -1,6 +1,11 @@
-"""Assembles all 5 in-scope hypotheses' regression results (H6 is
-deferred, per docs/superpowers/specs/2026-07-29-phase3-full-scale-
-simulation-design.md Sec 7) into one output table.
+"""Assembles all in-scope hypotheses' regression results into one output
+table: H1-H5 (per docs/superpowers/specs/2026-07-29-phase3-full-scale-
+simulation-design.md Sec 7 -- that document's own H6 is a separate,
+still-deferred privacy hypothesis, NOT related to H7-H11 below) plus
+H7-H11 (the 5 sandbox-preference hypotheses added by Plan 6, per
+docs/superpowers/specs/2026-08-04-phase3-plan6-concurrency-and-sandbox-
+hypotheses-design.md Sec 1 -- numbered starting at H7, not H6, specifically
+to avoid colliding with the master spec's existing deferred H6).
 """
 
 from pathlib import Path
@@ -8,7 +13,18 @@ from pathlib import Path
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from src.econometrics.hypothesis_regressions import regress_h1, regress_h2, regress_h3, regress_h4, regress_h5
+from src.econometrics.hypothesis_regressions import (
+    regress_h1,
+    regress_h2,
+    regress_h3,
+    regress_h4,
+    regress_h5,
+    regress_h7,
+    regress_h8,
+    regress_h9,
+    regress_h10,
+    regress_h11,
+)
 from src.econometrics.regression_engine import RegressionResult
 
 
@@ -21,6 +37,10 @@ def run_all_hypotheses(session: Session, matrix_run_id: str | None = None) -> li
     misconfigured run surfaces loudly instead of shipping a report
     missing a hypothesis with no explanation.
 
+    H1-H5 each return one pooled result; H7-H11 each return two
+    (domestic, cross_border), reported separately per Plan 6 design spec
+    Sec 1 -- 15 results total.
+
     `matrix_run_id`, if given, scopes every hypothesis to one `run_matrix`
     invocation (Plan 5 whole-branch review Fix C3) -- without it, a
     database holding more than one `run_matrix` call (e.g. a dry-run smoke
@@ -30,13 +50,17 @@ def run_all_hypotheses(session: Session, matrix_run_id: str | None = None) -> li
     hN_dataset`/`regress_hN` already supports, not just those functions
     in isolation.
     """
-    return [
+    results = [
         regress_h1(session, matrix_run_id=matrix_run_id),
         regress_h2(session, matrix_run_id=matrix_run_id),
         regress_h3(session, matrix_run_id=matrix_run_id),
         regress_h4(session, matrix_run_id=matrix_run_id),
         regress_h5(session, matrix_run_id=matrix_run_id),
     ]
+    for regress_fn in (regress_h7, regress_h8, regress_h9, regress_h10, regress_h11):
+        results.append(regress_fn(session, cell_variant="domestic", matrix_run_id=matrix_run_id))
+        results.append(regress_fn(session, cell_variant="cross_border", matrix_run_id=matrix_run_id))
+    return results
 
 
 def results_to_dataframe(results: list[RegressionResult]) -> pd.DataFrame:
