@@ -98,3 +98,41 @@ def test_runner_rejects_cell_keys_with_distributed():
             f"Error message should mention the incompatibility. Output:\n{error_output}"
     finally:
         status_file_path.unlink(missing_ok=True)
+
+
+def test_runner_rejects_a_path_unsafe_matrix_run_id(tmp_path, monkeypatch):
+    """Finding 9: matrix_run_id flows unsanitized into a filesystem path
+    (checkpoint_dir = REPO_ROOT / "checkpoints" / matrix_run_id) -- a value
+    like "../../escape" must be rejected up front with a clear error,
+    before checkpoint_dir is ever handed to run_matrix to create/write into,
+    rather than crashing deep inside the simulation with an uncaught OSError
+    or silently escaping the checkpoints/ directory."""
+    monkeypatch.setattr("dashboard.status_store._STATE_DIR", tmp_path / "state")
+    matrix_run_id = "../../escape-attempt"
+
+    env = {**__import__("os").environ, "DATABASE_URL": f"sqlite:///{tmp_path}/runner_test.db"}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "dashboard.runner",
+            "--matrix-run-id",
+            matrix_run_id,
+            "--seeds",
+            "0",
+            "--num-days",
+            "1",
+            "--cell-keys",
+            "master",
+            "--dry-run",
+        ],
+        cwd=str(REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    # No checkpoint directory should have been created outside checkpoints/.
+    assert not (REPO_ROOT / "checkpoints" / ".." / ".." / "escape-attempt").resolve().exists()

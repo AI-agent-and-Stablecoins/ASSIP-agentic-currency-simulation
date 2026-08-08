@@ -1,7 +1,10 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from streamlit.testing.v1 import AppTest
+
+from dashboard import status_store
 
 # NOTE: the installed streamlit version (1.61.1) resolves AppTest.from_file's
 # relative paths against the directory of the *calling test file* (tests/),
@@ -9,6 +12,16 @@ from streamlit.testing.v1 import AppTest
 # resolves to the nonexistent tests/dashboard/app.py. Using an absolute path
 # sidesteps that resolution entirely while still exercising the real script.
 APP_PATH = str(Path(__file__).resolve().parent.parent / "dashboard" / "app.py")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_state_dir(tmp_path, monkeypatch):
+    # Without this, every test here reads/writes the REAL dashboard/state/
+    # directory (and, via status_store.get_active_run_id(), can pick up
+    # whatever matrix_run_id a real prior run left behind) -- matching the
+    # isolation pattern already used in tests/test_dashboard_process_control.py.
+    monkeypatch.setattr("dashboard.status_store._STATE_DIR", tmp_path)
+    yield
 
 
 def test_app_renders_the_start_configuration_form():
@@ -82,3 +95,184 @@ def test_typing_the_matching_matrix_run_id_and_confirming_actually_launches_a_re
 
         assert not at.exception
         assert mock_start.called
+
+
+# --- Finding 1: Resume on a real (non-dry-run) tracked run must require confirmation too ---
+
+
+def test_resume_on_a_previously_real_run_requires_confirmation_like_start():
+    with patch("dashboard.process_control.resume") as mock_resume:
+        at = AppTest.from_file(APP_PATH)
+        at.run()
+
+        run_id_inputs = [inp for inp in at.text_input if inp.label == "matrix_run_id"]
+        matrix_run_id = run_id_inputs[0].value
+
+        # Simulate a previously-tracked REAL (non-dry-run) run that was
+        # stopped -- Resume must not be a single bare click for this.
+        status_store.write_status(matrix_run_id, pid=999_999_999, state="stopped", dry_run=False)
+        at.run()
+
+        bare_resume_buttons = [b for b in at.button if b.label.lower() == "resume"]
+        assert bare_resume_buttons == [], "a bare 'Resume' button must not be offered for a real tracked run"
+
+        confirm_resume_buttons = [
+            b for b in at.button if "confirm" in b.label.lower() and "resume" in b.label.lower()
+        ]
+        assert len(confirm_resume_buttons) == 1
+
+        # Clicking confirm WITHOUT typing the matching id must not resume.
+        confirm_resume_buttons[0].click().run()
+        assert not mock_resume.called
+
+        # Typing the matching matrix_run_id and confirming DOES resume.
+        resume_confirmation_inputs = [
+            inp for inp in at.text_input if "confirm" in inp.label.lower() and "resume" in inp.label.lower()
+        ]
+        assert len(resume_confirmation_inputs) == 1
+        resume_confirmation_inputs[0].set_value(matrix_run_id).run()
+
+        confirm_resume_buttons = [
+            b for b in at.button if "confirm" in b.label.lower() and "resume" in b.label.lower()
+        ]
+        confirm_resume_buttons[0].click().run()
+
+        assert not at.exception
+        assert mock_resume.called
+
+
+def test_resume_on_a_previously_dry_run_tracked_run_needs_no_extra_confirmation():
+    """Contrast case for Finding 1: a tracked run that WAS a dry run may
+    still be resumed with a single click -- the extra confirmation gate is
+    specific to a real (paid) underlying run."""
+    with patch("dashboard.process_control.resume") as mock_resume:
+        at = AppTest.from_file(APP_PATH)
+        at.run()
+
+        run_id_inputs = [inp for inp in at.text_input if inp.label == "matrix_run_id"]
+        matrix_run_id = run_id_inputs[0].value
+
+        status_store.write_status(matrix_run_id, pid=999_999_999, state="stopped", dry_run=True)
+        at.run()
+
+        bare_resume_buttons = [b for b in at.button if b.label.lower() == "resume"]
+        assert len(bare_resume_buttons) == 1
+        bare_resume_buttons[0].click().run()
+
+        assert not at.exception
+        assert mock_resume.called
+
+
+# --- Finding 3: an empty "Specific cells" selection must block launch, not run all 13 cells ---
+
+
+def test_specific_cells_with_no_selection_blocks_launch_with_an_error():
+    with patch("dashboard.process_control.start") as mock_start:
+        at = AppTest.from_file(APP_PATH)
+        at.run()
+
+        cell_scope_radios = [r for r in at.radio if "cell scope" in r.label.lower()]
+        assert len(cell_scope_radios) == 1
+        cell_scope_radios[0].set_value("Specific cells").run()
+
+        # Multiselect defaults to an empty selection -- Start must not even
+        # be offered in this state, only an explanatory error.
+        start_buttons = [b for b in at.button if b.label.lower() == "start"]
+        assert start_buttons == []
+        assert any("select at least one cell" in msg.value.lower() for msg in at.error)
+        assert not mock_start.called
+
+
+def test_specific_cells_with_a_selection_allows_launch():
+    with patch("dashboard.process_control.start") as mock_start:
+        at = AppTest.from_file(APP_PATH)
+        at.run()
+
+        cell_scope_radios = [r for r in at.radio if "cell scope" in r.label.lower()]
+        cell_scope_radios[0].set_value("Specific cells").run()
+
+        cell_multiselects = [m for m in at.multiselect if m.label.lower() == "cells"]
+        assert len(cell_multiselects) == 1
+        cell_multiselects[0].select("master").run()
+
+        start_buttons = [b for b in at.button if b.label.lower() == "start"]
+        assert len(start_buttons) == 1
+        start_buttons[0].click().run()
+
+        assert not at.exception
+        assert mock_start.called
+
+
+# --- Finding 9: an invalid matrix_run_id must block launch with a friendly error ---
+
+
+def test_invalid_matrix_run_id_blocks_launch_with_an_error():
+    with patch("dashboard.process_control.start") as mock_start:
+        at = AppTest.from_file(APP_PATH)
+        at.run()
+
+        run_id_inputs = [inp for inp in at.text_input if inp.label == "matrix_run_id"]
+        assert len(run_id_inputs) == 1
+        run_id_inputs[0].set_value("../../escape-attempt").run()
+
+        start_buttons = [b for b in at.button if b.label.lower() == "start"]
+        assert start_buttons == []
+        assert any("invalid" in msg.value.lower() for msg in at.error)
+        assert not at.exception
+        assert not mock_start.called
+
+
+# --- Finding 6: a corrupted status file must not crash Stop/Pause/Resume handlers ---
+
+
+def test_clicking_stop_with_a_corrupted_status_file_shows_an_error_instead_of_crashing():
+    at = AppTest.from_file(APP_PATH)
+    at.run()
+
+    run_id_inputs = [inp for inp in at.text_input if inp.label == "matrix_run_id"]
+    matrix_run_id = run_id_inputs[0].value
+
+    status_path = status_store.state_dir() / f"{matrix_run_id}.json"
+    status_path.write_text("not valid json{{{", encoding="utf-8")
+    at.run()
+    assert not at.exception
+
+    stop_buttons = [b for b in at.button if b.label.lower() == "stop"]
+    assert len(stop_buttons) == 1
+    stop_buttons[0].click().run()
+
+    assert not at.exception
+    assert any("corrupted" in msg.value.lower() for msg in at.error)
+
+
+def test_clicking_pause_with_a_corrupted_status_file_shows_an_error_instead_of_crashing():
+    at = AppTest.from_file(APP_PATH)
+    at.run()
+
+    run_id_inputs = [inp for inp in at.text_input if inp.label == "matrix_run_id"]
+    matrix_run_id = run_id_inputs[0].value
+
+    status_path = status_store.state_dir() / f"{matrix_run_id}.json"
+    status_path.write_text("not valid json{{{", encoding="utf-8")
+    at.run()
+    assert not at.exception
+
+    pause_buttons = [b for b in at.button if b.label.lower() == "pause"]
+    assert len(pause_buttons) == 1
+    pause_buttons[0].click().run()
+
+    assert not at.exception
+    assert any("corrupted" in msg.value.lower() for msg in at.error)
+
+
+# --- Finding 12: the Pause button must carry a tooltip explaining it behaves like Stop ---
+
+
+def test_pause_button_has_a_tooltip_explaining_it_behaves_like_stop():
+    at = AppTest.from_file(APP_PATH)
+    at.run()
+
+    pause_buttons = [b for b in at.button if b.label.lower() == "pause"]
+    assert len(pause_buttons) == 1
+    assert "stop" in pause_buttons[0].help.lower()
+    assert "resume" in pause_buttons[0].help.lower()
