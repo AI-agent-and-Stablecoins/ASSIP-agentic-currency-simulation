@@ -62,6 +62,12 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     matrix_run_id = args.matrix_run_id
+    # Fail fast, before checkpoint_dir (below) is ever handed to run_matrix/
+    # run_matrix_distributed to create/write into -- matrix_run_id comes
+    # straight from a Streamlit text input with no upstream validation, and
+    # a value like "../../foo" would otherwise let checkpoint_dir escape
+    # the intended checkpoints/ directory entirely.
+    status_store.validate_matrix_run_id(matrix_run_id)
     seeds = [int(s.strip()) for s in args.seeds.split(",")]
     cell_keys = [c.strip() for c in args.cell_keys.split(",")] if args.cell_keys else None
     dry_run = args.dry_run

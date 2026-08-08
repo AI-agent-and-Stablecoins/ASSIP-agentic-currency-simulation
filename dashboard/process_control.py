@@ -7,12 +7,18 @@ rerun-on-every-interaction model never touches the subprocess directly.
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import psutil
 from pydantic import BaseModel
 
 from dashboard import status_store
 from src.utils.constants import REPO_ROOT
+
+# Tolerance (seconds) for matching a live process's create_time() against the
+# one recorded in the status file at launch time -- guards against PID reuse
+# (e.g. after a reboot) making stop()/is_alive() target an unrelated process.
+_CREATE_TIME_TOLERANCE_SECONDS = 1.0
 
 
 class RunConfig(BaseModel):
@@ -25,8 +31,28 @@ class RunConfig(BaseModel):
     num_processes: int = 4
 
 
-def is_alive(pid: int) -> bool:
-    return psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+def is_alive(pid: int, pid_create_time: float | None = None) -> bool:
+    """True if `pid` is a live, non-zombie process. When `pid_create_time`
+    is given (the value recorded in the status file at launch time), also
+    verifies the live process's own create_time() matches within a small
+    tolerance -- a mismatch means the PID was recycled by an unrelated
+    process (e.g. after a reboot), which must be treated as "not alive".
+    All psutil exceptions (the process can vanish between the existence
+    check and the status/create_time reads -- a TOCTOU race) are treated
+    as "not alive" rather than allowed to raise out to callers/the UI.
+    """
+    try:
+        if not psutil.pid_exists(pid):
+            return False
+        proc = psutil.Process(pid)
+        if proc.status() == psutil.STATUS_ZOMBIE:
+            return False
+        if pid_create_time is not None:
+            if abs(proc.create_time() - pid_create_time) >= _CREATE_TIME_TOLERANCE_SECONDS:
+                return False
+        return True
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
 
 
 def _build_command(config: RunConfig) -> list[str]:
@@ -66,19 +92,50 @@ def _build_popen_kwargs() -> dict:
     return {"start_new_session": True}
 
 
-def start(config: RunConfig) -> None:
-    command = _build_command(config)
+def log_path(matrix_run_id: str) -> Path:
+    """Per-run log file the child process's stdout/stderr are redirected
+    to (start() below) instead of subprocess.DEVNULL, so the app can show
+    the tail of a failed run's diagnostics instead of just an unexplained
+    "failed" status."""
+    return status_store.state_dir() / f"{matrix_run_id}.log"
+
+
+def read_log_tail(matrix_run_id: str, num_lines: int = 20) -> str | None:
+    """Last `num_lines` lines of the child process's redirected
+    stdout/stderr, or None if no log file exists yet for this run."""
+    path = log_path(matrix_run_id)
+    if not path.exists():
+        return None
     try:
-        process = subprocess.Popen(
-            command,
-            cwd=str(REPO_ROOT),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            **_build_popen_kwargs(),  # detach: must outlive this Streamlit rerun
-        )
-    except OSError as exc:
-        status_store.write_status(config.matrix_run_id, state="failed", error=f"launch failed: {exc}")
-        raise
+        with open(path, "rb") as f:
+            lines = f.read().decode("utf-8", errors="replace").splitlines()
+        return "\n".join(lines[-num_lines:])
+    except OSError:
+        return None
+
+
+def start(config: RunConfig) -> None:
+    status_store.validate_matrix_run_id(config.matrix_run_id)
+    command = _build_command(config)
+    log_file_path = log_path(config.matrix_run_id)
+    log_file = open(log_file_path, "wb")
+    try:
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=str(REPO_ROOT),
+                stdout=log_file,
+                stderr=log_file,
+                **_build_popen_kwargs(),  # detach: must outlive this Streamlit rerun
+            )
+        except OSError as exc:
+            status_store.write_status(config.matrix_run_id, state="failed", error=f"launch failed: {exc}")
+            raise
+    finally:
+        # The child process inherits its own handle to the file (or, on the
+        # exception path above, nothing was ever spawned); this parent-side
+        # handle isn't needed past Popen() and must not be leaked.
+        log_file.close()
 
     # Brief grace period to catch an immediate child failure (e.g. runner.py's
     # own CLI validation rejecting an invalid flag combination) before we
@@ -94,6 +151,11 @@ def start(config: RunConfig) -> None:
         )
         return
 
+    try:
+        pid_create_time = psutil.Process(process.pid).create_time()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        pid_create_time = None
+
     # seeds/num_days/cell_keys/distributed/num_processes are written here
     # (not by runner.py itself) specifically so `resume()` can reconstruct
     # a full RunConfig later purely from the status file, without needing
@@ -101,6 +163,7 @@ def start(config: RunConfig) -> None:
     status_store.write_status(
         config.matrix_run_id,
         pid=process.pid,
+        pid_create_time=pid_create_time,
         state="running",
         dry_run=config.dry_run,
         seeds=config.seeds,
@@ -116,8 +179,40 @@ def stop(matrix_run_id: str) -> None:
     if status is None or status.get("pid") is None:
         return
     pid = status["pid"]
-    if is_alive(pid):
-        psutil.Process(pid).terminate()
+    pid_create_time = status.get("pid_create_time")
+    if is_alive(pid, pid_create_time):
+        try:
+            parent = psutil.Process(pid)
+            # A distributed run (run_matrix_distributed) spawns a
+            # ProcessPoolExecutor of worker processes under this same
+            # parent PID -- terminating only the parent would orphan those
+            # workers, leaving them alive (and, for a real/non-dry-run,
+            # still spending) after Stop is clicked.
+            children = parent.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            parent = None
+            children = []
+
+        if parent is not None:
+            try:
+                parent.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        for child in children:
+            try:
+                child.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        if children:
+            gone, alive = psutil.wait_procs(children, timeout=2)
+            for child in alive:
+                try:
+                    child.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
     status_store.write_status(matrix_run_id, state="stopped")
 
 
@@ -126,7 +221,7 @@ def resume(matrix_run_id: str) -> None:
     if status is None:
         raise ValueError(f"Cannot resume {matrix_run_id!r}: no prior status recorded for it")
     pid = status.get("pid")
-    if pid is not None and is_alive(pid):
+    if pid is not None and is_alive(pid, status.get("pid_create_time")):
         raise ValueError(f"Cannot resume {matrix_run_id!r}: a process (pid {pid}) is already running for it")
     config = RunConfig(
         matrix_run_id=matrix_run_id,

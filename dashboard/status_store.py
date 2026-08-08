@@ -14,6 +14,7 @@ merges incrementally):
 {
     "matrix_run_id": str,
     "pid": int,
+    "pid_create_time": float,  # psutil.Process(pid).create_time(), to detect PID reuse
     "state": "running" | "stopped" | "completed" | "failed" | "crashed",
     "dry_run": bool,
     "checkpoint_dir": str | None,
@@ -26,6 +27,9 @@ merges incrementally):
 """
 
 import json
+import os
+import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,12 +38,27 @@ from src.utils.constants import REPO_ROOT
 _STATE_DIR = REPO_ROOT / "dashboard" / "state"
 _ACTIVE_RUN_POINTER = "_active_run_id.json"
 
+_MATRIX_RUN_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,128}")
+
 
 class StatusFileCorruptedError(Exception):
     def __init__(self, matrix_run_id: str, path: Path):
         self.matrix_run_id = matrix_run_id
         self.path = path
         super().__init__(f"Status file for {matrix_run_id!r} at {path} is corrupted/unreadable")
+
+
+def validate_matrix_run_id(matrix_run_id: str) -> None:
+    """Guards against path traversal / filesystem-invalid characters, since
+    matrix_run_id flows unsanitized into filesystem paths in this module
+    (the status file) and in dashboard/runner.py (the checkpoint dir). A
+    value like "../../foo" could otherwise write outside the intended
+    directory."""
+    if not isinstance(matrix_run_id, str) or not _MATRIX_RUN_ID_RE.fullmatch(matrix_run_id):
+        raise ValueError(
+            f"Invalid matrix_run_id {matrix_run_id!r}: must match "
+            r"[A-Za-z0-9._-]{1,128}"
+        )
 
 
 def state_dir() -> Path:
@@ -52,13 +71,20 @@ def _status_path(matrix_run_id: str) -> Path:
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
-    tmp_path = path.with_suffix(".json.tmp")
+    # Unique-per-writer temp file name: process_control.start() (parent) and
+    # runner.py's main() (child) both write to the SAME status file
+    # concurrently by design, so a deterministic temp name would let them
+    # collide on the same temp file and produce a corrupted/truncated result.
+    tmp_path = path.with_name(f"{path.stem}.json.{os.getpid()}.{threading.get_ident()}.tmp")
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
     tmp_path.replace(path)  # atomic on both POSIX and Windows
 
 
 def write_status(matrix_run_id: str, **fields) -> None:
+    validate_matrix_run_id(matrix_run_id)
     path = _status_path(matrix_run_id)
     existing = read_status(matrix_run_id) or {"matrix_run_id": matrix_run_id}
     existing.update(fields)
@@ -85,5 +111,11 @@ def get_active_run_id() -> str | None:
     path = state_dir() / _ACTIVE_RUN_POINTER
     if not path.exists():
         return None
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)["matrix_run_id"]
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)["matrix_run_id"]
+    except (json.JSONDecodeError, OSError, KeyError):
+        # A corrupted active-run pointer should just mean "no default to
+        # show," not a crash -- unlike a corrupted per-run status file
+        # (read_status), there's no specific matrix_run_id to blame here.
+        return None

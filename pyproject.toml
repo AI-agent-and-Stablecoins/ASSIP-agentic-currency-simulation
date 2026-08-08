@@ -35,7 +35,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["src*", "database*", "sandbox*", "metrics*"]
+include = ["src*", "database*", "sandbox*", "metrics*", "dashboard*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
