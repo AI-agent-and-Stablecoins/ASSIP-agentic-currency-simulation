@@ -52,3 +52,49 @@ def test_runner_dry_run_writes_a_completed_status(tmp_path, monkeypatch):
         assert status["failures"] == []
     finally:
         real_status_path.unlink(missing_ok=True)
+
+
+def test_runner_rejects_cell_keys_with_distributed():
+    """Verifies that combining --cell-keys with --distributed is rejected
+    with a non-zero exit code and no status file is written, preventing the
+    safety gap where --cell-keys would be silently ignored under --distributed."""
+    matrix_run_id = "test-cell-keys-distributed-rejection"
+    status_file_path = REPO_ROOT / "dashboard" / "state" / f"{matrix_run_id}.json"
+
+    env = {**__import__("os").environ}
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "dashboard.runner",
+                "--matrix-run-id",
+                matrix_run_id,
+                "--seeds",
+                "0",
+                "--num-days",
+                "1",
+                "--cell-keys",
+                "master",
+                "--distributed",
+                "--dry-run",
+            ],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        # Must exit with non-zero status
+        assert result.returncode != 0, f"Expected non-zero exit but got {result.returncode}\nstdout: {result.stdout}\nstderr: {result.stderr}"
+
+        # Must not have written a status file (safety: no partial state left behind)
+        assert not status_file_path.exists(), f"Status file should not exist but found at {status_file_path}"
+
+        # Error message should mention the incompatibility
+        error_output = result.stderr + result.stdout
+        assert "cell-keys" in error_output.lower() or "--distributed" in error_output, \
+            f"Error message should mention the incompatibility. Output:\n{error_output}"
+    finally:
+        status_file_path.unlink(missing_ok=True)

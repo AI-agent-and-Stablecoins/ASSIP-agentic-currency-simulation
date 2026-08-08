@@ -48,6 +48,19 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
+
+    # Reject invalid combination: --cell-keys with --distributed, since
+    # run_matrix_distributed has no cell_keys parameter and always runs the
+    # full 13-cell matrix. This is a safety check to prevent silently dropping
+    # the --cell-keys flag when --distributed is set, which would cause
+    # unexpected LLM calls and costs.
+    if args.cell_keys and args.distributed:
+        raise ValueError(
+            "--cell-keys cannot be combined with --distributed: "
+            "run_matrix_distributed always runs the full matrix and does not support filtering by cell keys. "
+            "Use either --cell-keys with single-process mode or --distributed without --cell-keys."
+        )
+
     matrix_run_id = args.matrix_run_id
     seeds = [int(s.strip()) for s in args.seeds.split(",")]
     cell_keys = [c.strip() for c in args.cell_keys.split(",")] if args.cell_keys else None
