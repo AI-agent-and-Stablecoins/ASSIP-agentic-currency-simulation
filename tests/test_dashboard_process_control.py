@@ -7,7 +7,7 @@ import psutil
 import pytest
 
 from dashboard import status_store
-from dashboard.process_control import RunConfig, _build_popen_kwargs, is_alive, resume, start, stop
+from dashboard.process_control import RunConfig, _build_popen_kwargs, is_alive, log_path, read_log_tail, resume, start, stop
 
 
 @pytest.fixture(autouse=True)
@@ -275,3 +275,54 @@ def test_stop_terminates_child_processes_too(tmp_path, monkeypatch):
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
         parent.wait(timeout=5)
+
+
+# --- Re-review finding: read_log_tail() must not read the whole file on every call ---
+
+
+def test_read_log_tail_returns_correct_last_lines_from_a_log_larger_than_the_seek_back_window(monkeypatch):
+    """Regression for the re-review finding: the pre-fix implementation did
+    `f.read().decode(...).splitlines()` -- the ENTIRE file, every call, even
+    though this is invoked every 5s by app.py's auto-refresh fragment for as
+    long as a failed run's status is displayed. The fix seeks back only
+    `_LOG_TAIL_SEEK_BACK_BYTES` bytes from the end before reading.
+
+    Patches that constant down to something small so this test doesn't need
+    to actually write 64KB+ of log content to exercise the seek-back path,
+    then proves the returned tail is still exactly correct even though the
+    read is now bounded well below the total file size. The patched window
+    (1000 bytes) is chosen generously larger than the last 20 lines
+    themselves (~460 bytes) so those specific lines are read intact -- the
+    documented approximation only bites if the requested lines themselves
+    don't fit inside the window, which is not what this test is checking.
+    """
+    monkeypatch.setattr("dashboard.process_control._LOG_TAIL_SEEK_BACK_BYTES", 1000)
+
+    matrix_run_id = "log-tail-seek-back-test"
+    path = log_path(matrix_run_id)
+    # Each line is short but there are many of them -- total file size is
+    # far larger than the 1000-byte seek-back window patched in above, so a
+    # naive whole-file read would still get the right answer; only the
+    # bounded seek-back path proves the read itself is actually bounded.
+    all_lines = [f"log line number {i:05d}" for i in range(500)]
+    path.write_text("\n".join(all_lines) + "\n", encoding="utf-8")
+    assert path.stat().st_size > 1000 * 10  # sanity: file is well beyond the seek-back window
+
+    tail = read_log_tail(matrix_run_id, num_lines=20)
+
+    assert tail == "\n".join(all_lines[-20:])
+
+
+def test_read_log_tail_returns_none_when_no_log_file_exists():
+    assert read_log_tail("no-such-run-log-tail") is None
+
+
+def test_read_log_tail_handles_a_log_file_smaller_than_the_seek_back_window():
+    matrix_run_id = "log-tail-small-file-test"
+    path = log_path(matrix_run_id)
+    lines = ["short line one", "short line two", "short line three"]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    tail = read_log_tail(matrix_run_id, num_lines=20)
+
+    assert tail == "\n".join(lines)

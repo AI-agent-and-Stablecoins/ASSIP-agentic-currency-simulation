@@ -113,6 +113,19 @@ def test_validate_matrix_run_id_rejects_path_unsafe_or_oversized_ids(invalid_id)
         validate_matrix_run_id(invalid_id)
 
 
+@pytest.mark.parametrize("dot_id", [".", ".."])
+def test_validate_matrix_run_id_rejects_bare_dot_and_dotdot(dot_id):
+    """Re-review finding: _MATRIX_RUN_ID_RE = r"[A-Za-z0-9._-]{1,128}" matches
+    "." and ".." in full (the character class includes '.'), even though
+    these values later get used to build a path
+    (REPO_ROOT / "checkpoints" / matrix_run_id in dashboard/runner.py) --
+    ".." would resolve the checkpoint dir to REPO_ROOT itself, and "."
+    would collapse all runs' checkpoints into the same directory. Both
+    must be explicitly rejected regardless of the regex."""
+    with pytest.raises(ValueError):
+        validate_matrix_run_id(dot_id)
+
+
 def test_write_status_rejects_a_path_traversal_matrix_run_id_before_touching_the_filesystem(tmp_path, monkeypatch):
     monkeypatch.setattr("dashboard.status_store._STATE_DIR", tmp_path)
     with pytest.raises(ValueError):

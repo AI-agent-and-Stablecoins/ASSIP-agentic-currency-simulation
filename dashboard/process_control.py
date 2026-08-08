@@ -4,6 +4,7 @@ process is spawned or killed from the dashboard -- Streamlit's own
 rerun-on-every-interaction model never touches the subprocess directly.
 """
 
+import os
 import subprocess
 import sys
 import time
@@ -14,6 +15,15 @@ from pydantic import BaseModel
 
 from dashboard import status_store
 from src.utils.constants import REPO_ROOT
+
+# Bound on how many trailing bytes of a log file read_log_tail() will ever
+# read from disk. Rendered every 5s by app.py's auto-refresh fragment for as
+# long as a failed run's status is displayed, so reading the WHOLE file on
+# every tick (the pre-fix behavior) is wasteful/slow for a large log. This is
+# an approximation -- if the last `num_lines` happen to span more than this
+# many bytes, fewer complete lines than requested are returned -- an
+# accepted tradeoff for a diagnostic log tail.
+_LOG_TAIL_SEEK_BACK_BYTES = 64 * 1024
 
 # Tolerance (seconds) for matching a live process's create_time() against the
 # one recorded in the status file at launch time -- guards against PID reuse
@@ -102,13 +112,22 @@ def log_path(matrix_run_id: str) -> Path:
 
 def read_log_tail(matrix_run_id: str, num_lines: int = 20) -> str | None:
     """Last `num_lines` lines of the child process's redirected
-    stdout/stderr, or None if no log file exists yet for this run."""
+    stdout/stderr, or None if no log file exists yet for this run.
+
+    Reads at most `_LOG_TAIL_SEEK_BACK_BYTES` trailing bytes of the file
+    (via seek from the end) rather than the whole file, since this is
+    called every 5s by app.py's auto-refresh fragment for as long as a
+    failed run's status is displayed."""
     path = log_path(matrix_run_id)
     if not path.exists():
         return None
     try:
         with open(path, "rb") as f:
-            lines = f.read().decode("utf-8", errors="replace").splitlines()
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - _LOG_TAIL_SEEK_BACK_BYTES))
+            chunk = f.read()
+        lines = chunk.decode("utf-8", errors="replace").splitlines()
         return "\n".join(lines[-num_lines:])
     except OSError:
         return None

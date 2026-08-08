@@ -54,10 +54,15 @@ def validate_matrix_run_id(matrix_run_id: str) -> None:
     (the status file) and in dashboard/runner.py (the checkpoint dir). A
     value like "../../foo" could otherwise write outside the intended
     directory."""
-    if not isinstance(matrix_run_id, str) or not _MATRIX_RUN_ID_RE.fullmatch(matrix_run_id):
+    if (
+        not isinstance(matrix_run_id, str)
+        or matrix_run_id in (".", "..")
+        or not _MATRIX_RUN_ID_RE.fullmatch(matrix_run_id)
+    ):
         raise ValueError(
             f"Invalid matrix_run_id {matrix_run_id!r}: must match "
             r"[A-Za-z0-9._-]{1,128}"
+            " and must not be exactly '.' or '..'"
         )
 
 

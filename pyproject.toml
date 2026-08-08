@@ -24,7 +24,7 @@ llm = ["httpx>=0.27"]
 econometrics = ["statsmodels>=0.14"]
 # Phase 3 dashboard (dashboard/): Streamlit UI plus psutil for cross-platform
 # subprocess liveness checks in dashboard/process_control.py.
-dashboard = ["streamlit>=1.36", "psutil>=6.0"]
+dashboard = ["streamlit>=1.37", "psutil>=6.0"]
 
 [dependency-groups]
 dev = [

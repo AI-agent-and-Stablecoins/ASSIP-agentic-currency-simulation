@@ -276,3 +276,40 @@ def test_pause_button_has_a_tooltip_explaining_it_behaves_like_stop():
     assert len(pause_buttons) == 1
     assert "stop" in pause_buttons[0].help.lower()
     assert "resume" in pause_buttons[0].help.lower()
+
+
+# --- Re-review finding: the live-progress fragment must not leak a SQLAlchemy
+# Session on every 5s auto-refresh tick ---
+
+
+def test_render_live_progress_does_not_leak_sqlalchemy_sessions_across_repeated_reruns():
+    """Regression for the re-review finding: `_render_live_progress`
+    previously called `database.session.new_session()` and never closed it.
+    Run every 5s via `@st.fragment(run_every="5s")`, this could exhaust the
+    default SQLAlchemy QueuePool (pool_size=5 + max_overflow=10 = 15
+    outstanding connections) after roughly 75s of the page being open
+    (reproduced directly: `QueuePool limit ... reached` after ~15 unclosed
+    sessions).
+
+    `AppTest.run()` re-executes the whole script on every call -- including
+    the fragment function's own direct call at the bottom of app.py --
+    exactly like a real Streamlit rerun would, so calling it repeatedly here
+    reproduces the same leak pattern `run_every="5s"` would produce over
+    time. Asserting the pool's checked-out count returns to 0 after EVERY
+    rerun (not just that 15 reruns don't blow the pool) catches the leak on
+    the very first iteration for the pre-fix code, since it never closed a
+    session at all.
+    """
+    from database.session import get_engine
+
+    engine = get_engine()
+    at = AppTest.from_file(APP_PATH)
+
+    for _ in range(20):
+        at.run()
+        assert not at.exception
+        assert engine.pool.checkedout() == 0, (
+            "a SQLAlchemy Session was left checked out after the live-progress "
+            "fragment ran -- it must close its session every rerun, not just "
+            "on some of them"
+        )

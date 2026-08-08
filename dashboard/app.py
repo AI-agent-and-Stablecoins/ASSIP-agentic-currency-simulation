@@ -221,15 +221,15 @@ def _render_status(matrix_run_id: str) -> None:
 @st.fragment(run_every="5s")
 def _render_live_progress(matrix_run_id: str) -> None:
     st.header("Live progress")
-    session = new_session()
-    try:
-        progress_rows = get_progress_for_run(session, matrix_run_id)
-    except OperationalError:
-        st.warning(
-            "Database schema not initialized yet -- no tables exist. Start a run to initialize it, "
-            "or run database.session.create_all_tables() directly."
-        )
-        progress_rows = []
+    with new_session() as session:
+        try:
+            progress_rows = get_progress_for_run(session, matrix_run_id)
+        except OperationalError:
+            st.warning(
+                "Database schema not initialized yet -- no tables exist. Start a run to initialize it, "
+                "or run database.session.create_all_tables() directly."
+            )
+            progress_rows = []
     if not progress_rows:
         st.info("No progress recorded yet for this matrix_run_id.")
     else:
