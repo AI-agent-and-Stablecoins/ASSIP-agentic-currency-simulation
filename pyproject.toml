@@ -22,6 +22,9 @@ market-data = ["requests>=2.31"]
 llm = ["httpx>=0.27"]
 # Phase 3 Plan 5: the H1-H5 hypothesis regression engine (src/econometrics/).
 econometrics = ["statsmodels>=0.14"]
+# Phase 3 dashboard (dashboard/): Streamlit UI plus psutil for cross-platform
+# subprocess liveness checks in dashboard/process_control.py.
+dashboard = ["streamlit>=1.36", "psutil>=6.0"]
 
 [dependency-groups]
 dev = [
