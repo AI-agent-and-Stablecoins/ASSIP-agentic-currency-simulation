@@ -76,7 +76,8 @@ def test_build_popen_kwargs_uses_windows_detachment_flags_on_win32(monkeypatch):
     """
     monkeypatch.setattr(sys, "platform", "win32")
     kwargs = _build_popen_kwargs()
-    assert kwargs == {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS}
+    # Windows detachment flags: CREATE_NEW_PROCESS_GROUP=0x00000200 | DETACHED_PROCESS=0x00000008
+    assert kwargs == {"creationflags": 0x00000208}
     assert "start_new_session" not in kwargs
 
 

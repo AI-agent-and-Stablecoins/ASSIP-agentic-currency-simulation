@@ -57,7 +57,12 @@ def _build_popen_kwargs() -> dict:
     own real detachment flags instead.
     """
     if sys.platform == "win32":
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS}
+        return {
+            "creationflags": (
+                getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+                | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+            )
+        }
     return {"start_new_session": True}
 
 
