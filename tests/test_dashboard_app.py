@@ -53,3 +53,32 @@ def test_turning_dry_run_off_requires_typing_the_matrix_run_id_before_a_real_lau
         confirm_buttons[0].click().run()
 
         assert not mock_start.called
+
+
+def test_typing_the_matching_matrix_run_id_and_confirming_actually_launches_a_real_run():
+    with patch("dashboard.process_control.start") as mock_start:
+        at = AppTest.from_file(APP_PATH)
+        at.run()
+
+        # The run id field itself is labeled exactly "matrix_run_id" -- the
+        # confirmation field's label also contains that substring ("Type the
+        # matrix_run_id above to confirm..."), so match on the exact label to
+        # avoid grabbing the wrong widget.
+        run_id_inputs = [inp for inp in at.text_input if inp.label == "matrix_run_id"]
+        assert len(run_id_inputs) == 1
+        matrix_run_id = run_id_inputs[0].value
+
+        dry_run_checkboxes = [cb for cb in at.checkbox if "dry" in cb.label.lower()]
+        assert len(dry_run_checkboxes) == 1
+        dry_run_checkboxes[0].uncheck().run()
+
+        confirmation_inputs = [inp for inp in at.text_input if "confirm" in inp.label.lower()]
+        assert len(confirmation_inputs) == 1
+        confirmation_inputs[0].set_value(matrix_run_id).run()
+
+        confirm_buttons = [b for b in at.button if "confirm" in b.label.lower()]
+        assert len(confirm_buttons) == 1
+        confirm_buttons[0].click().run()
+
+        assert not at.exception
+        assert mock_start.called

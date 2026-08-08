@@ -10,6 +10,7 @@ Streamlit script's own rerun-on-every-interaction execution model.
 """
 
 import streamlit as st
+from sqlalchemy.exc import OperationalError
 
 from dashboard import status_store
 from dashboard.process_control import RunConfig, is_alive, resume, start, stop
@@ -56,6 +57,13 @@ def _build_config() -> RunConfig:
     )
 
 
+try:
+    status = status_store.read_status(matrix_run_id)
+    status_read_error = False
+except status_store.StatusFileCorruptedError:
+    status = None
+    status_read_error = True
+
 st.header("Controls")
 control_col1, control_col2, control_col3, control_col4 = st.columns(4)
 
@@ -88,18 +96,14 @@ with control_col3:
         st.rerun()
 
 with control_col4:
-    status = status_store.read_status(matrix_run_id)
     resume_disabled = status is None or status.get("state") not in ("stopped", "failed")
     if st.button("Resume", disabled=resume_disabled):
         resume(matrix_run_id)
         st.rerun()
 
 st.header("Status")
-try:
-    status = status_store.read_status(matrix_run_id)
-except status_store.StatusFileCorruptedError:
+if status_read_error:
     st.error("Status file for this matrix_run_id is unreadable. Live progress below still works from the database.")
-    status = None
 
 if status is None:
     st.info("No run has been started under this matrix_run_id yet.")
@@ -125,9 +129,20 @@ else:
     elif status.get("state") == "running":
         st.caption("Failures are only known once each cell/seed's run completes -- not live mid-run.")
 
+    error = status.get("error")
+    if error:
+        st.error(f"Error: {error}")
+
 st.header("Live progress")
 session = new_session()
-progress_rows = get_progress_for_run(session, matrix_run_id)
+try:
+    progress_rows = get_progress_for_run(session, matrix_run_id)
+except OperationalError:
+    st.warning(
+        "Database schema not initialized yet -- no tables exist. Start a run to initialize it, "
+        "or run database.session.create_all_tables() directly."
+    )
+    progress_rows = []
 if not progress_rows:
     st.info("No progress recorded yet for this matrix_run_id.")
 else:
