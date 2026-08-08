@@ -219,3 +219,6 @@ __marimo__/
 
 # Git worktrees (project-local scratch, never checked in)
 .worktrees/
+
+# Dashboard control-plane state (PIDs, run status) -- machine-local, never checked in
+dashboard/state/
