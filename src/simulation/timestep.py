@@ -41,6 +41,7 @@ from src.agents.wealth import advance_price_index
 from src.blockchain.routing_engine import CurrencyChainOption, generate_candidates
 from src.economy.fx_dynamics import advance_eur_usd_rate
 from src.economy.fx_tax import compute_fx_tax, load_fx_params
+from src.economy.income import pay_income
 from src.economy.shocks import ShockEvent, ShockType, apply_currency_shock, apply_shock
 from src.llm.decision_adapter import DecisionValidationError, NegotiationAction, adapt_decision
 from src.llm.decision_schema import Decision, DecisionAction
@@ -787,6 +788,9 @@ def run_timestep(
 
     sellers = [a for a in env.agents.values() if isinstance(a, SellerAgent)]
     buyers = {a.agent_id: a for a in env.agents.values() if isinstance(a, BuyerAgent)}
+
+    for buyer in buyers.values():
+        pay_income(buyer, day)
 
     for seller in sellers:
         for good in env.goods:
