@@ -420,6 +420,7 @@ def _process_buyer_llm_day(
             env.chains,
             env.liquidity_pools,
             trust_ledger=env.trust_ledger,
+            currency_chain_pins=env.currency_chain_pins,
         )
         if not candidates:
             continue
@@ -859,6 +860,7 @@ def run_timestep(
                     env.chains,
                     env.liquidity_pools,
                     trust_ledger=env.trust_ledger,
+                    currency_chain_pins=env.currency_chain_pins,
                 )
                 if not candidates:
                     continue

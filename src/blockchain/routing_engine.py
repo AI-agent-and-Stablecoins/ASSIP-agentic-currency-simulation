@@ -31,9 +31,12 @@ def generate_candidates(
     chains: dict[str, ChainConfig],
     liquidity_pools: LiquidityPoolRegistry | None = None,
     trust_ledger: TrustLedger | None = None,
+    currency_chain_pins: dict[str, str] | None = None,
 ) -> list[CurrencyChainOption]:
-    """One candidate per (currency the agent holds a positive balance of) x (chain)."""
+    """One candidate per (currency the agent holds a positive balance of) x (chain),
+    unless currency_chain_pins restricts a currency to exactly one chain."""
     liquidity_pools = liquidity_pools or LiquidityPoolRegistry()
+    currency_chain_pins = currency_chain_pins or {}
     options: list[CurrencyChainOption] = []
     for symbol, balance in available_balances.items():
         if balance <= 0 or symbol not in currencies:
@@ -43,7 +46,9 @@ def generate_candidates(
             peg_error = trust_ledger.effective_peg_error(symbol, currency.peg_error)
         else:
             peg_error = currency.peg_error
-        for chain in chains.values():
+        pinned_chain = currency_chain_pins.get(symbol)
+        candidate_chains = [chains[pinned_chain]] if pinned_chain is not None else list(chains.values())
+        for chain in candidate_chains:
             pool_liquidity_score = liquidity_pools.get_liquidity(currency, chain.name)
             if trust_ledger is not None:
                 pool_liquidity_score = trust_ledger.effective_liquidity_score(symbol, pool_liquidity_score)

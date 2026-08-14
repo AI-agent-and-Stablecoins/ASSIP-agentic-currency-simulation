@@ -57,6 +57,7 @@ class Environment:
         # (there is no genuine "before" to compare against on an agent's
         # first day).
         self.previous_real_purchasing_power: dict[str, float] = {}
+        self.currency_chain_pins: dict[str, str] = {}
 
     def refresh_exchange_rates(self) -> None:
         """Call after macro_state changes (e.g. a shock) to rebuild derived rate lookups."""

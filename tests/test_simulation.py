@@ -138,6 +138,19 @@ def test_run_timestep_records_narrative_memory_for_agents_holding_a_shocked_curr
     assert matching[0][2] in consumer.memory.narrative_events
 
 
+def test_run_timestep_respects_currency_chain_pins():
+    env = Environment.build("baseline", {"consumer": 1, "merchant": 1})
+    env.currency_chain_pins = {"USDC": "solana"}
+    consumer = next(a for a in env.agents.values() if a.agent_class == "buyer")
+    consumer.wallet.balances = {"USDC": 1000.0}
+    rng = random.Random(0)
+
+    result = run_timestep(env, day=0, rng=rng)
+
+    settled = [tx for tx in result.transactions if tx.status == TransactionStatus.SETTLED]
+    assert all(tx.chain_name == "solana" for tx in settled if tx.currency_symbol == "USDC")
+
+
 def test_environment_starts_with_price_index_of_one():
     env = Environment.build("baseline", {"consumer": 2, "merchant": 2})
     assert env.price_index == 1.0

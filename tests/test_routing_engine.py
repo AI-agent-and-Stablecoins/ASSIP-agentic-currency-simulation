@@ -41,3 +41,44 @@ def test_generate_candidates_reflects_trust_ledger_effective_liquidity_score():
     candidates = generate_candidates({"USDC": 100.0}, currencies, chains, trust_ledger=ledger)
 
     assert candidates[0].liquidity_score < currencies["USDC"].liquidity_score
+
+
+def test_generate_candidates_pins_a_currency_to_its_assigned_chain():
+    currencies = load_currency_universe()
+    chains = load_chain_universe()
+
+    candidates = generate_candidates(
+        {"USDC": 100.0, "USDT": 100.0},
+        currencies,
+        chains,
+        currency_chain_pins={"USDC": "ethereum", "USDT": "solana"},
+    )
+
+    usdc_chains = {c.chain_name for c in candidates if c.currency_symbol == "USDC"}
+    usdt_chains = {c.chain_name for c in candidates if c.currency_symbol == "USDT"}
+    assert usdc_chains == {"ethereum"}
+    assert usdt_chains == {"solana"}
+
+
+def test_generate_candidates_leaves_unpinned_currencies_on_every_chain():
+    currencies = load_currency_universe()
+    chains = load_chain_universe()
+
+    candidates = generate_candidates(
+        {"USDC": 100.0, "USDT": 100.0},
+        currencies,
+        chains,
+        currency_chain_pins={"USDC": "ethereum"},
+    )
+
+    usdt_chains = {c.chain_name for c in candidates if c.currency_symbol == "USDT"}
+    assert usdt_chains == set(chains.keys())
+
+
+def test_generate_candidates_default_behavior_is_unchanged_without_pins():
+    currencies = load_currency_universe()
+    chains = load_chain_universe()
+
+    candidates = generate_candidates({"USDC": 100.0}, currencies, chains)
+
+    assert {c.chain_name for c in candidates} == set(chains.keys())
