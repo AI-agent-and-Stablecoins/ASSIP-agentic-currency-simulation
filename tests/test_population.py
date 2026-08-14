@@ -157,11 +157,21 @@ def test_hypothesis_population_forces_the_requested_utility_type_on_cohorted_age
     population = generate_hypothesis_population(seed=0, model_candidates=CANDIDATE_MODELS, utility_type="cara")
 
     cohorted = [a for a in population if a.profile_name in ("consumer", "bank", "investor")]
-    # When risk_aversion=0.0, CARA becomes risk_neutral (per cara_utility_fields logic)
-    assert all(a.utility_type in ("cara", "risk_neutral") for a in cohorted)
+    assert all(a.utility_type == "cara" for a in cohorted)
 
     non_cohorted = [a for a in population if a.profile_name in ("merchant", "institution")]
     assert all(a.utility_type == "multi_attribute" for a in non_cohorted)
+
+
+def test_hypothesis_population_substitutes_a_tiny_nonzero_value_for_cara_at_zero():
+    from src.agents.population import HYPOTHESIS_CARA_ZERO_SUBSTITUTE
+
+    population = generate_hypothesis_population(seed=0, model_candidates=CANDIDATE_MODELS, utility_type="cara")
+
+    cohorted = [a for a in population if a.profile_name in ("consumer", "bank", "investor")]
+    risk_aversions = sorted({a.risk_aversion for a in cohorted})
+    assert risk_aversions == [HYPOTHESIS_CARA_ZERO_SUBSTITUTE, 2.0, 4.0, 6.0]
+    assert all(a.utility_type == "cara" for a in cohorted)
 
 
 def test_hypothesis_population_supports_epstein_zin_proxy():

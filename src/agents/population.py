@@ -78,6 +78,14 @@ HYPOTHESIS_EIS = 1.0
 
 HYPOTHESIS_UTILITY_TYPES = {"crra", "cara", "epstein_zin_proxy"}
 
+# CARAUtility raises on risk_aversion=0.0 (mathematically undefined -- the
+# utility formula divides by a). Using a tiny nonzero value for the a=0
+# cohort keeps every cohort on genuine CARA utility for a "cara" run,
+# matching this function's "one utility function across all 4 cohorts"
+# guarantee, rather than switching that cohort to risk_neutral utility like
+# cara_utility_fields() does for generate_agent_population's random sampling.
+HYPOTHESIS_CARA_ZERO_SUBSTITUTE = 1e-4
+
 
 def generate_hypothesis_population(seed: int, model_candidates: list[str], utility_type: str) -> list[BaseAgent]:
     if not model_candidates:
@@ -107,10 +115,10 @@ def generate_hypothesis_population(seed: int, model_candidates: list[str], utili
         for i in range(count):
             cara_override = None
             if profile_name in CARA_ELIGIBLE_ROLES:
-                if utility_type == "cara":
-                    cara_override = cara_utility_fields(cohort_assignment[i])
-                else:
-                    cara_override = (utility_type, cohort_assignment[i])
+                a = cohort_assignment[i]
+                if utility_type == "cara" and a == 0.0:
+                    a = HYPOTHESIS_CARA_ZERO_SUBSTITUTE
+                cara_override = (utility_type, a)
 
             assigned_model = shuffled_models[slot_index % len(shuffled_models)]
             deterministic_id = f"{profile_name}-seed{seed}-{slot_index:03d}"
