@@ -1258,3 +1258,23 @@ def test_run_timestep_llm_path_accepts_realistic_gold_balance_against_usd_scale_
     # "still invalid after one correction: Insufficient funds").
     for record in result.llm_decisions:
         assert "Insufficient funds" not in (record.failure_reason or "")
+
+
+def test_run_timestep_settlement_resumes_after_a_buyer_receives_income():
+    env = Environment.build("baseline", {"consumer": 1, "merchant": 1})
+    consumer = next(a for a in env.agents.values() if a.agent_class == "buyer")
+    consumer.currency_zone = "USD"
+    consumer.wallet.balances = {"USDC": 0.01}
+    rng = random.Random(0)
+
+    settled_before_payday = []
+    for day in range(1, 7):
+        result = run_timestep(env, day, rng)
+        settled_before_payday.extend(tx for tx in result.transactions if tx.status == TransactionStatus.SETTLED)
+
+    assert settled_before_payday == []
+
+    result = run_timestep(env, day=7, rng=rng)
+
+    settled_on_payday = [tx for tx in result.transactions if tx.status == TransactionStatus.SETTLED]
+    assert len(settled_on_payday) > 0

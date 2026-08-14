@@ -3,6 +3,8 @@ agent_class: buyer
 risk_tolerance: low
 utility_type: crra
 risk_aversion: 3.0
+income_per_period: 250.0
+income_period_days: 7
 initial_wallet:
   USDC: 1000.0
   EURC: 300.0
