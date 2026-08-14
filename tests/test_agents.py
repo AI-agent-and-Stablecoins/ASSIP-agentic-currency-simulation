@@ -144,3 +144,33 @@ def test_build_agent_cara_override_risk_neutral_branch():
     assert agent.utility_type == "risk_neutral"
     assert isinstance(agent.utility_fn, RiskNeutralUtility)
     assert agent.cara_coefficient == 0.0  # nominal a is still recorded even though utility_type switched
+
+
+def test_consumer_profile_has_income_fields():
+    profile = load_agent_profiles()["consumer"]
+
+    assert profile.income_per_period == 250.0
+    assert profile.income_period_days == 7
+
+
+def test_non_buyer_profile_has_no_income_fields():
+    profile = load_agent_profiles()["merchant"]
+
+    assert profile.income_per_period is None
+    assert profile.income_period_days is None
+
+
+def test_build_agent_carries_income_fields_onto_agent():
+    profile = load_agent_profiles()["consumer"]
+    agent = build_agent(profile)
+
+    assert agent.income_per_period == 250.0
+    assert agent.income_period_days == 7
+
+
+def test_build_agent_leaves_income_fields_none_for_a_profile_without_them():
+    profile = load_agent_profiles()["merchant"]
+    agent = build_agent(profile)
+
+    assert agent.income_per_period is None
+    assert agent.income_period_days is None

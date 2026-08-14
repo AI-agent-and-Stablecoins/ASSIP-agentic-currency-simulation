@@ -26,6 +26,8 @@ class BaseAgent(BaseModel):
     currency_zone: str | None = None
     assigned_model: str | None = None
     cara_coefficient: float | None = None
+    income_per_period: float | None = None
+    income_period_days: int | None = None
     memory: AgentMemory = Field(default_factory=AgentMemory)
     preferences: AgentPreferences = Field(default_factory=AgentPreferences)
 

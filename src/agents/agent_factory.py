@@ -43,6 +43,8 @@ class AgentProfileConfig(BaseModel):
     risk_aversion: float | None = None
     eis: float | None = None
     weights: MultiAttributeWeights | None = None
+    income_per_period: float | None = None
+    income_period_days: int | None = None
     initial_wallet: dict[str, float] = {}
 
 
@@ -94,4 +96,6 @@ def build_agent(
         currency_zone=currency_zone,
         assigned_model=assigned_model,
         cara_coefficient=nominal_cara,
+        income_per_period=profile.income_per_period,
+        income_period_days=profile.income_period_days,
     )
