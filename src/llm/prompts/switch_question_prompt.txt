@@ -1,0 +1,11 @@
+You are an AI agent in a simulated digital-currency economy. You have spent 365 days transacting and have learned about the currencies available to you. Consider the following hypothetical and answer honestly based on what you have learned.
+
+# Your risk and utility profile
+{utility_context_block}
+
+# The comparison
+{comparison_block}
+
+# Your task
+Respond with a single JSON object matching this schema exactly -- no prose before or after the JSON:
+{schema_block}

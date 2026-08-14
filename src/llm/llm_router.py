@@ -18,6 +18,7 @@ import httpx
 from pydantic import BaseModel
 
 from src.llm.decision_schema import Decision
+from src.llm.switch_elicitation import SwitchDecision
 from src.utils.config_loader import load_yaml_as
 from src.utils.constants import CONFIG_ROOT
 
@@ -268,6 +269,74 @@ def call_model(
             try:
                 repair_response = _post_chat_completion(client, model_id, repair_messages)
                 repaired_decision = _parse_decision(repair_response)
+                _record_usage(repair_response)
+                return repaired_decision
+            except (KeyError, IndexError, ValueError) as repair_exc:
+                last_error = f"malformed output, repair failed: {repair_exc}"
+                retry_config.sleep_fn(retry_config.backoff_base_seconds * (2**attempt))
+                continue
+
+    raise ModelCallFailedError(model_id, last_error)
+
+
+def _parse_switch_decision(response: httpx.Response) -> SwitchDecision:
+    body = response.json()
+    content = body["choices"][0]["message"]["content"]
+    return SwitchDecision.model_validate_json(content)
+
+
+def call_model_for_switch(
+    prompt: str,
+    model_id: str,
+    client: httpx.Client,
+    retry_config: RetryConfig | None = None,
+) -> SwitchDecision:
+    """Same 3-tier failure handling as call_model (technical-failure retry,
+    one repair reprompt), targeting SwitchDecision instead of Decision --
+    a yes/no switch question has no economic-validity tier to check."""
+    retry_config = retry_config or RetryConfig()
+    messages = [{"role": "user", "content": prompt}]
+    last_error = "unknown error"
+
+    for attempt in range(retry_config.max_retries):
+        try:
+            response = _post_chat_completion(client, model_id, messages)
+        except httpx.TimeoutException as exc:
+            last_error = f"timeout: {exc}"
+            retry_config.sleep_fn(retry_config.backoff_base_seconds * (2**attempt))
+            continue
+
+        if response.status_code in (401, 403):
+            raise AuthenticationError(
+                f"OpenRouter rejected the API key for model {model_id}: HTTP {response.status_code}"
+            )
+
+        if response.status_code in _TECHNICAL_RETRY_STATUS_CODES:
+            last_error = f"HTTP {response.status_code}"
+            retry_config.sleep_fn(retry_config.backoff_base_seconds * (2**attempt))
+            continue
+
+        if response.status_code != 200:
+            raise ModelCallFailedError(model_id, f"unexpected HTTP {response.status_code}")
+
+        try:
+            decision = _parse_switch_decision(response)
+            _record_usage(response)
+            return decision
+        except (KeyError, IndexError, ValueError) as exc:
+            repair_messages = messages + [
+                {"role": "assistant", "content": response.text},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Your last response was not valid JSON matching the required schema: {exc}. "
+                        "Respond again with valid JSON only."
+                    ),
+                },
+            ]
+            try:
+                repair_response = _post_chat_completion(client, model_id, repair_messages)
+                repaired_decision = _parse_switch_decision(repair_response)
                 _record_usage(repair_response)
                 return repaired_decision
             except (KeyError, IndexError, ValueError) as repair_exc:
