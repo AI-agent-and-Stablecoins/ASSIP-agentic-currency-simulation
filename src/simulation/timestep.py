@@ -790,7 +790,7 @@ def run_timestep(
     buyers = {a.agent_id: a for a in env.agents.values() if isinstance(a, BuyerAgent)}
 
     for buyer in buyers.values():
-        pay_income(buyer, day)
+        pay_income(buyer, day, env.currencies, env.exchange_rates)
 
     for seller in sellers:
         for good in env.goods:

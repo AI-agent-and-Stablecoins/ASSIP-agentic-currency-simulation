@@ -94,6 +94,24 @@ def test_cell_keys_restricts_which_cells_run():
     assert {r.cell_key for r in results} == {"master", "liquidity_vs_governance_domestic"}
 
 
+def test_income_does_not_crash_a_sandbox_cell_across_a_payday():
+    """Regression test for the whole-branch review's Critical finding: a
+    sandbox cell's restricted 2-symbol currency universe (SBX*) doesn't
+    contain the real USDC/EURC symbols pay_income used to hardcode, so the
+    first payday (day 7, per consumer.yaml's income_period_days) crashed
+    every sandbox cell with KeyError('USDC') before this fix."""
+    results, failures = run_matrix(
+        model_candidates=MODEL_CANDIDATES,
+        seeds=[0],
+        num_days=8,
+        dry_run=True,
+        session=_session(),
+        cell_keys=["master", "liquidity_vs_governance_domestic"],
+    )
+    assert failures == []
+    assert {r.cell_key for r in results} == {"master", "liquidity_vs_governance_domestic"}
+
+
 def test_run_matrix_refuses_dry_run_false_without_any_real_clients():
     with pytest.raises(ValueError):
         run_matrix(model_candidates=MODEL_CANDIDATES, seeds=[0], num_days=1, dry_run=False, session=_session())
