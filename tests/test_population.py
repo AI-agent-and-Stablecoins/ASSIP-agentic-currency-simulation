@@ -201,3 +201,23 @@ def test_hypothesis_population_same_seed_is_reproducible():
     risk_b = [a.risk_aversion for a in population_b]
     assert ids_a == ids_b
     assert risk_a == risk_b
+
+
+def test_hypothesis_population_cohorted_agents_have_no_cara_coefficient():
+    for utility_type in ("crra", "cara", "epstein_zin_proxy"):
+        population = generate_hypothesis_population(seed=0, model_candidates=CANDIDATE_MODELS, utility_type=utility_type)
+        cohorted = [a for a in population if a.profile_name in ("consumer", "bank", "investor")]
+        assert all(a.cara_coefficient is None for a in cohorted)
+
+
+def test_hypothesis_population_cohorted_agents_are_exempt_from_risk_adaptation():
+    from src.economy.risk_adaptation import RiskAdaptationParams, adapt_cara_coefficient
+
+    population = generate_hypothesis_population(seed=0, model_candidates=CANDIDATE_MODELS, utility_type="crra")
+    agent = next(a for a in population if a.profile_name == "consumer")
+    before_utility_type, before_risk_aversion = agent.utility_type, agent.risk_aversion
+
+    adapt_cara_coefficient(agent, w_real_before=1000.0, w_real_after=0.0, params=RiskAdaptationParams(eta_risk=1.0, a_max=5.0))
+
+    assert agent.utility_type == before_utility_type
+    assert agent.risk_aversion == before_risk_aversion

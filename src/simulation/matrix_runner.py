@@ -293,10 +293,10 @@ from database.repository import SimulationRunLogEntry, SimulationRunRepository, 
 from src.agents.base_agent import BaseAgent
 from src.agents.population import generate_agent_population
 from src.currencies.currency import CurrencyConfig, load_currency_universe
-from src.currencies.exchange_rates import ExchangeRateTable
 from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
 from src.economy.sandbox_scenarios import build_sandbox_scenario
 from src.economy.shocks import ScenarioConfig, load_scenario
+from src.economy.wallet_seeding import seed_restricted_wallets
 from src.llm.agent_reasoning import PROMPT_VERSIONS, hash_rendered_prompt
 from src.llm.llm_router import LLMUsage, get_cumulative_usage, verify_model_candidates
 from src.market.marketplace import Listing, Marketplace
@@ -443,44 +443,12 @@ def _resolve_available_models(model_candidates: list[str], openrouter_client: ht
     return available
 
 
-def _seed_sandbox_wallets(
-    agents: dict[str, BaseAgent],
-    sandbox_currencies: dict[str, CurrencyConfig],
-    real_currencies: dict[str, CurrencyConfig],
-    peg_reference_rates: dict[str, float],
-) -> None:
-    """See this module's docstring ("Sandbox wallet-seeding gap"). REPLACES
-    every agent's wallet (buyer, seller, and non-participating classes
-    alike -- `persist_full_timestep` logs all of them) with a balance split
-    evenly BY USD VALUE (not raw unit count -- see the module docstring for
-    why unit-count splitting badly skews the asset-backing sandboxes) across
-    both of `sandbox_currencies`' symbols, sized to that agent's pre-existing
-    total wallet value. Buyers need this to get any candidates at all from
-    `generate_candidates`; every agent needs their leftover real-universe
-    balances removed so `real_purchasing_power`'s `ExchangeRateTable` lookup
-    (built from only these 2 sandbox currencies) never KeyErrors on a symbol
-    it doesn't know.
-
-    `real_currencies` and `peg_reference_rates` let this function build an
-    `ExchangeRateTable` for the agent's ORIGINAL (real-universe) balances --
-    by the time this is called, `env.currencies` has already been replaced
-    with `sandbox_currencies`, so the real universe must be supplied
-    separately. `peg_reference_rates` (e.g. `{"USD": 1.0, "EUR": 1.08, "XAU":
-    2400.0}`) is shared between both tables: every real and sandbox currency
-    alike pegs to one of USD/EUR/XAU, so the same reference dict prices both
-    sides consistently.
-    """
-    real_rates = ExchangeRateTable(real_currencies, peg_reference_rates)
-    sandbox_rates = ExchangeRateTable(sandbox_currencies, peg_reference_rates)
-    symbols = list(sandbox_currencies.keys())
-    for agent in agents.values():
-        total_usd_value = agent.wallet.total_value_usd(real_rates)
-        if total_usd_value <= 0:
-            total_usd_value = 1000.0  # safe floor, matching consumer.yaml's USDC scale
-        share_usd = total_usd_value / len(symbols)
-        agent.wallet.balances = {
-            symbol: sandbox_rates.convert(share_usd, "USD", symbol) for symbol in symbols
-        }
+# Extracted to src/economy/wallet_seeding.py (shared with the new
+# hypothesis-sims in src/economy/hypothesis_scenarios.py, which shouldn't
+# have to import this module's much heavier httpx/sqlalchemy/database
+# dependencies just to seed a wallet) -- aliased back to this module's
+# original private name so every existing call site/test here is unchanged.
+_seed_sandbox_wallets = seed_restricted_wallets
 
 
 class _CellSeedCheckpoint(BaseModel):

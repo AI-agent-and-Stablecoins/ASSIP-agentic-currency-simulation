@@ -129,6 +129,23 @@ def generate_hypothesis_population(seed: int, model_candidates: list[str], utili
                 cara_override=cara_override,
                 agent_id=deterministic_id,
             )
+            if profile_name in CARA_ELIGIBLE_ROLES:
+                # build_agent always sets cara_coefficient alongside a
+                # cara_override, regardless of utility_type -- but
+                # src/economy/risk_adaptation.py's adapt_cara_coefficient
+                # treats a non-None cara_coefficient as "adapt this agent
+                # toward more risk-aversion after a loss", forcibly
+                # converting utility_type/risk_aversion via
+                # cara_utility_fields() on every persisted day. That would
+                # silently drift a CRRA/Epstein-Zin agent onto CARA utility
+                # and cap risk_aversion at configs/economy/
+                # risk_adaptation_params.yaml's a_max (5.0, below this
+                # function's own a=6.0 cohort) -- both violate "one utility
+                # function, one fixed risk-aversion cohort, for the whole
+                # sim" (this function's core reporting guarantee). None
+                # here makes adapt_cara_coefficient's own guard skip these
+                # agents entirely.
+                agent.cara_coefficient = None
             population.append(agent)
             slot_index += 1
 
