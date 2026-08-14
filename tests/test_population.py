@@ -1,6 +1,6 @@
 import pytest
 
-from src.agents.population import generate_agent_population
+from src.agents.population import generate_agent_population, generate_hypothesis_population
 
 
 CANDIDATE_MODELS = [f"vendor/model-{i}" for i in range(30)]  # fewer than 100, forces reuse
@@ -125,3 +125,69 @@ def test_agent_id_is_reproducible_across_calls_with_same_seed():
 def test_empty_model_candidates_raises_loudly():
     with pytest.raises(ValueError):
         generate_agent_population(seed=0, model_candidates=[])
+
+
+def test_hypothesis_population_generates_exactly_100_agents():
+    population = generate_hypothesis_population(seed=0, model_candidates=CANDIDATE_MODELS, utility_type="crra")
+    assert len(population) == 100
+
+
+def test_hypothesis_population_role_composition_matches_spec():
+    population = generate_hypothesis_population(seed=0, model_candidates=CANDIDATE_MODELS, utility_type="crra")
+
+    counts = {}
+    for agent in population:
+        counts[agent.profile_name] = counts.get(agent.profile_name, 0) + 1
+
+    assert counts == {"consumer": 40, "merchant": 35, "bank": 8, "investor": 8, "institution": 9}
+
+
+def test_hypothesis_population_cohorts_are_exactly_a_0_2_4_6():
+    population = generate_hypothesis_population(seed=0, model_candidates=CANDIDATE_MODELS, utility_type="crra")
+
+    cohorted = [a for a in population if a.profile_name in ("consumer", "bank", "investor")]
+    assert len(cohorted) == 56
+    risk_aversions = [a.risk_aversion for a in cohorted]
+    assert sorted(set(risk_aversions)) == [0.0, 2.0, 4.0, 6.0]
+    for level in (0.0, 2.0, 4.0, 6.0):
+        assert risk_aversions.count(level) == 14
+
+
+def test_hypothesis_population_forces_the_requested_utility_type_on_cohorted_agents():
+    population = generate_hypothesis_population(seed=0, model_candidates=CANDIDATE_MODELS, utility_type="cara")
+
+    cohorted = [a for a in population if a.profile_name in ("consumer", "bank", "investor")]
+    # When risk_aversion=0.0, CARA becomes risk_neutral (per cara_utility_fields logic)
+    assert all(a.utility_type in ("cara", "risk_neutral") for a in cohorted)
+
+    non_cohorted = [a for a in population if a.profile_name in ("merchant", "institution")]
+    assert all(a.utility_type == "multi_attribute" for a in non_cohorted)
+
+
+def test_hypothesis_population_supports_epstein_zin_proxy():
+    from src.utility.epstein_zin import EpsteinZinProxyUtility
+
+    population = generate_hypothesis_population(
+        seed=0, model_candidates=CANDIDATE_MODELS, utility_type="epstein_zin_proxy"
+    )
+
+    cohorted = [a for a in population if a.profile_name in ("consumer", "bank", "investor")]
+    assert all(a.utility_type == "epstein_zin_proxy" for a in cohorted)
+    assert all(isinstance(a.utility_fn, EpsteinZinProxyUtility) for a in cohorted)
+
+
+def test_hypothesis_population_rejects_an_unknown_utility_type():
+    with pytest.raises(ValueError):
+        generate_hypothesis_population(seed=0, model_candidates=CANDIDATE_MODELS, utility_type="not_a_real_type")
+
+
+def test_hypothesis_population_same_seed_is_reproducible():
+    population_a = generate_hypothesis_population(seed=5, model_candidates=CANDIDATE_MODELS, utility_type="crra")
+    population_b = generate_hypothesis_population(seed=5, model_candidates=CANDIDATE_MODELS, utility_type="crra")
+
+    ids_a = [a.agent_id for a in population_a]
+    ids_b = [a.agent_id for a in population_b]
+    risk_a = [a.risk_aversion for a in population_a]
+    risk_b = [a.risk_aversion for a in population_b]
+    assert ids_a == ids_b
+    assert risk_a == risk_b
