@@ -86,7 +86,7 @@ New `tests/test_income.py`:
 
 Extend `tests/test_simulation.py` (the existing home for `run_timestep`-level tests) with one regression test: run a short simulation where a buyer's wallet is driven to ~0 before `income_period_days` elapses, assert it cannot settle, then advance to the payday and assert a subsequent transaction can settle again. This is the direct regression test for the bug that motivated this spec.
 
-## 7. Amendment (2026-08-14, post-implementation whole-branch review): sandbox-cell currency resolution
+## 6. Amendment (2026-08-14, post-implementation whole-branch review): sandbox-cell currency resolution
 
 The final whole-branch review found a Critical bug not anticipated by §1-§5: `HOME_CURRENCY_BY_ZONE`'s hardcoded `USDC`/`EURC` symbols do not exist in the 12 sandbox cells' currency universe (`src/currencies/sandbox_currencies.py` — each sandbox cell restricts `env.currencies` to 2 synthetic `SBX*` symbols via `matrix_runner.py`'s `_seed_sandbox_wallets`). `pay_income` depositing into a symbol absent from that universe crashed every sandbox cell with `KeyError: 'USDC'` on the first payday (reproduced end-to-end: `run_matrix` recorded `failures` for every sandbox cell it touched, while `main` completed cleanly).
 
@@ -102,7 +102,7 @@ This requires widening `pay_income`'s signature from `pay_income(agent, day)` to
 
 **User decision, deferred (2026-08-14):** the review also found that `Environment.build` (used by `SimulationRunner`, the dashboard, and `experiments/*.py` — already documented elsewhere in this codebase as "the legacy count-based path") never assigns `currency_zone`, so income remains a permanent no-op for every run built through it — those callers still exhibit the original starvation bug, unfixed by this plan. This is accepted as a known, documented limitation rather than fixed here: the actual production run this plan exists to unblock is the `matrix_runner`-based master/sandbox matrix, not the lighter-weight `SimulationRunner` path. Revisit separately if `SimulationRunner`/dashboard/`experiments/*.py` runs need the same fix.
 
-## 8. Out of scope
+## 7. Out of scope
 
 - Re-running the actual 13-cell/365-day/99-model matrix to regenerate valid research data — real OpenRouter spend, a separate decision for the user once this fix is merged.
 - Any change to `bank.yaml`/`institution.yaml`/`investor.yaml`/`merchant.yaml` — none of them are starving.

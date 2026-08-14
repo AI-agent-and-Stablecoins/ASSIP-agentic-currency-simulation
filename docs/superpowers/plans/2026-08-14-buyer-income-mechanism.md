@@ -4,7 +4,7 @@
 
 **Goal:** Give buyer-class agents (currently only the `consumer` profile) a weekly income deposit so they stop permanently exhausting their wallet ~5 days into any run, which is what caused 99.1% transaction failure in the Aug 13 2026 real matrix run.
 
-**Architecture:** A new config-driven `pay_income(agent, day)` function in `src/economy/income.py`, called once per simulated day for every buyer inside `run_timestep` (`src/simulation/timestep.py`), regardless of the `use_llm` path. Two new optional fields (`income_per_period`, `income_period_days`) carry the amount/schedule from `configs/agent_profiles/consumer.yaml` through `AgentProfileConfig` and `build_agent` onto `BaseAgent`, so non-buyer profiles (bank/institution/investor/merchant) are untouched (fields stay `None`, function no-ops).
+**Architecture:** A new config-driven `pay_income(agent, day, currencies, exchange_rates)` function in `src/economy/income.py`, called once per simulated day for every buyer inside `run_timestep` (`src/simulation/timestep.py`), regardless of the `use_llm` path. Two new optional fields (`income_per_period`, `income_period_days`) carry the amount/schedule from `configs/agent_profiles/consumer.yaml` through `AgentProfileConfig` and `build_agent` onto `BaseAgent`, so non-buyer profiles (bank/institution/investor/merchant) are untouched (fields stay `None`, function no-ops).
 
 **Tech Stack:** Python 3.12, pydantic 2.x, pytest. No new dependencies.
 
