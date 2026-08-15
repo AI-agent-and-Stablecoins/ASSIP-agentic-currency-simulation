@@ -24,11 +24,11 @@ def test_render_switch_prompt_includes_both_coins_and_the_values():
     prompt = render_switch_prompt(
         _context(),
         fixed_symbol="USDT",
-        fixed_field="liquidity_score",
-        fixed_value=0.98,
+        fixed_traits={"governance_score": 0.55, "liquidity_score": 0.98, "peg_error": 0.0008},
         varied_symbol="TDUSD",
         varied_field="liquidity_score",
         varied_value=0.50,
+        varied_other_traits={"governance_score": 0.60, "peg_error": 0.0001},
     )
 
     assert "USDT" in prompt
@@ -36,6 +36,36 @@ def test_render_switch_prompt_includes_both_coins_and_the_values():
     assert "0.98" in prompt
     assert "0.5" in prompt
     assert "will_switch" in prompt
+
+
+def test_render_switch_prompt_includes_the_agents_wallet_holdings():
+    prompt = render_switch_prompt(
+        _context(),
+        fixed_symbol="USDT",
+        fixed_traits={"governance_score": 0.55, "liquidity_score": 0.98, "peg_error": 0.0008},
+        varied_symbol="TDUSD",
+        varied_field="liquidity_score",
+        varied_value=0.50,
+        varied_other_traits={"governance_score": 0.60, "peg_error": 0.0001},
+    )
+
+    assert "USDT=100.0" in prompt
+    assert "TDUSD=50.0" in prompt
+
+
+def test_render_switch_prompt_includes_the_varied_coins_other_real_traits():
+    prompt = render_switch_prompt(
+        _context(),
+        fixed_symbol="USDT",
+        fixed_traits={"governance_score": 0.55, "liquidity_score": 0.98, "peg_error": 0.0008},
+        varied_symbol="TDUSD",
+        varied_field="liquidity_score",
+        varied_value=0.50,
+        varied_other_traits={"governance_score": 0.60, "peg_error": 0.0001},
+    )
+
+    assert "governance_score=0.6" in prompt
+    assert "peg_error=0.0001" in prompt
 
 
 def test_call_model_for_switch_parses_a_valid_response():

@@ -10,6 +10,7 @@ re-derive those shapes from scratch.
 """
 
 import json
+import re
 
 import httpx
 
@@ -44,6 +45,43 @@ def mock_openrouter_client(model_responses: dict[str, dict]) -> httpx.Client:
         if model_id not in model_responses:
             return httpx.Response(404, json={"error": f"no mocked response for model {model_id!r}"})
         content = json.dumps(model_responses[model_id])
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    return httpx.Client(base_url=OPENROUTER_BASE_URL, transport=httpx.MockTransport(handler))
+
+
+def mock_switch_threshold_client(
+    field: str, threshold: float, higher_is_better: bool, model_id: str = "vendor/model"
+) -> httpx.Client:
+    """Build an httpx.Client whose transport fakes OpenRouter's chat-
+    completion endpoint for use with llm_router.call_model_for_switch, with
+    a THRESHOLD-DEPENDENT SwitchDecision -- unlike mock_openrouter_client,
+    which can only ever return one constant response and so degenerates a
+    binary search to one bound regardless of whether its direction logic is
+    correct, silently masking bugs in it.
+
+    Reads `field`'s value straight out of the rendered prompt's
+    "Coin B (...): ...{field}=<value>" line (src.llm.switch_elicitation.
+    render_switch_prompt always renders the varied field there) and answers
+    will_switch=True on whichever side of `threshold` is more attractive:
+    values >= threshold for a higher-is-better field (liquidity_score,
+    governance_score), values <= threshold for a lower-is-better one
+    (peg_error, gas_fee).
+    """
+
+    pattern = re.compile(rf"Coin B \([^)]*\):[^\n]*{re.escape(field)}=(-?[\d.]+)")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/chat/completions"
+        body = json.loads(request.content)
+        if body["model"] != model_id:
+            return httpx.Response(404, json={"error": f"no mocked response for model {body['model']!r}"})
+        prompt = body["messages"][0]["content"]
+        match = pattern.search(prompt)
+        assert match, f"could not find {field!r} in the Coin B block of prompt:\n{prompt}"
+        varied_value = float(match.group(1))
+        will_switch = varied_value >= threshold if higher_is_better else varied_value <= threshold
+        content = json.dumps({"will_switch": will_switch, "reasoning": "test"})
         return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
 
     return httpx.Client(base_url=OPENROUTER_BASE_URL, transport=httpx.MockTransport(handler))
