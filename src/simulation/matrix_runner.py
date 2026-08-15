@@ -279,7 +279,6 @@ that needs to compare two attempts under the same seed should record
 these settings itself, since they are not recoverable from the database.
 """
 
-import pickle
 import random
 from pathlib import Path
 from typing import Callable
@@ -300,6 +299,12 @@ from src.economy.wallet_seeding import seed_restricted_wallets
 from src.llm.agent_reasoning import PROMPT_VERSIONS, hash_rendered_prompt
 from src.llm.llm_router import LLMUsage, get_cumulative_usage, verify_model_candidates
 from src.market.marketplace import Listing, Marketplace
+from src.simulation.checkpointing import (
+    CellSeedCheckpoint,
+    delete_checkpoint,
+    load_checkpoint,
+    save_checkpoint,
+)
 from src.simulation.environment import Environment
 from src.simulation.provenance import compute_config_hash, compute_git_commit_hash, model_roster_summary_for
 from src.simulation.timestep import TimestepResult, run_timestep
@@ -449,50 +454,6 @@ def _resolve_available_models(model_candidates: list[str], openrouter_client: ht
 # dependencies just to seed a wallet) -- aliased back to this module's
 # original private name so every existing call site/test here is unchanged.
 _seed_sandbox_wallets = seed_restricted_wallets
-
-
-class _CellSeedCheckpoint(BaseModel):
-    """Pickled per-cell/seed resumability snapshot -- see `run_matrix`'s
-    `checkpoint_dir` docstring paragraph. Not a database model: this is a
-    side-channel file, not a persisted table, since it holds live Python
-    objects (`Environment`, `random.Random`) with no natural relational
-    shape."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    env: Environment
-    rng: random.Random
-    next_day: int
-    daily_results: list[TimestepResult]
-    num_days_completed: int
-    total_transactions: int
-    total_llm_decisions: int
-
-
-def _checkpoint_path(checkpoint_dir: Path, run_id: str) -> Path:
-    return checkpoint_dir / f"{run_id}.pkl"
-
-
-def _save_checkpoint(checkpoint_dir: Path, run_id: str, checkpoint: _CellSeedCheckpoint) -> None:
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    path = _checkpoint_path(checkpoint_dir, run_id)
-    tmp_path = path.with_suffix(".pkl.tmp")
-    with open(tmp_path, "wb") as f:
-        pickle.dump(checkpoint, f)
-    tmp_path.replace(path)  # atomic on both POSIX and Windows -- never leaves a half-written checkpoint
-
-
-def _load_checkpoint(checkpoint_dir: Path, run_id: str) -> _CellSeedCheckpoint | None:
-    path = _checkpoint_path(checkpoint_dir, run_id)
-    if not path.exists():
-        return None
-    with open(path, "rb") as f:
-        return pickle.load(f)
-
-
-def _delete_checkpoint(checkpoint_dir: Path, run_id: str) -> None:
-    path = _checkpoint_path(checkpoint_dir, run_id)
-    path.unlink(missing_ok=True)
 
 
 def run_matrix(
@@ -711,7 +672,7 @@ def run_matrix(
         for seed in seeds:
             run_id = f"{matrix_run_id}-{spec.key}-seed{seed}"
 
-            checkpoint = _load_checkpoint(checkpoint_dir, run_id) if checkpoint_dir is not None else None
+            checkpoint = load_checkpoint(checkpoint_dir, run_id) if checkpoint_dir is not None else None
 
             if (
                 checkpoint is None
@@ -821,10 +782,10 @@ def run_matrix(
                         # day (see its own docstring), so the checkpoint
                         # below never points past what's durably in the
                         # database.
-                        _save_checkpoint(
+                        save_checkpoint(
                             checkpoint_dir,
                             run_id,
-                            _CellSeedCheckpoint(
+                            CellSeedCheckpoint(
                                 env=env,
                                 rng=rng,
                                 next_day=day + 1,
@@ -836,7 +797,7 @@ def run_matrix(
                         )
 
                 if checkpoint_dir is not None:
-                    _delete_checkpoint(checkpoint_dir, run_id)  # fully complete -- no longer needed
+                    delete_checkpoint(checkpoint_dir, run_id)  # fully complete -- no longer needed
 
                 results.append(
                     MatrixCellResult(
