@@ -1,12 +1,12 @@
 """One function per hypothesis: builds that hypothesis's dataset (`src.
-econometrics.hypothesis_datasets`) and fits it (`src.econometrics
+econometrics.hypothesis_datasets`) and fits it (`src.legacy.econometrics
 .regression_engine.fit_clustered_logit`), per docs/superpowers/specs/
 2026-08-02-phase3-plan5-econometrics-design.md.
 """
 
 from sqlalchemy.orm import Session
 
-from src.econometrics.hypothesis_datasets import (
+from src.legacy.econometrics.hypothesis_datasets import (
     build_h1_dataset,
     build_h2_dataset,
     build_h3_dataset,
@@ -18,7 +18,7 @@ from src.econometrics.hypothesis_datasets import (
     build_h10_dataset,
     build_h11_dataset,
 )
-from src.econometrics.regression_engine import RegressionResult, fit_clustered_logit
+from src.legacy.econometrics.regression_engine import RegressionResult, fit_clustered_logit
 
 
 def regress_h1(session: Session, matrix_run_id: str | None = None) -> RegressionResult:

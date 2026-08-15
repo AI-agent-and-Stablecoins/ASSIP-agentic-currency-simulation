@@ -2,8 +2,8 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from src.econometrics.regression_engine import RegressionResult
-from src.econometrics.report import results_to_dataframe, run_all_hypotheses, write_report_csv
+from src.legacy.econometrics.regression_engine import RegressionResult
+from src.legacy.econometrics.report import results_to_dataframe, run_all_hypotheses, write_report_csv
 
 # run_all_hypotheses is pure orchestration (call every regress_hN function,
 # return their results -- 15 results total: H1-H5 pooled once each, H7-H11
@@ -50,16 +50,16 @@ _ALL_HYPOTHESIS_LABELS = (
 def test_run_all_hypotheses_returns_one_result_per_hypothesis():
     fake_results = {h: _fake_result(h) for h in _ALL_HYPOTHESIS_LABELS}
     with (
-        patch("src.econometrics.report.regress_h1", return_value=fake_results["H1"]) as m1,
-        patch("src.econometrics.report.regress_h2", return_value=fake_results["H2"]) as m2,
-        patch("src.econometrics.report.regress_h3", return_value=fake_results["H3"]) as m3,
-        patch("src.econometrics.report.regress_h4", return_value=fake_results["H4"]) as m4,
-        patch("src.econometrics.report.regress_h5", return_value=fake_results["H5"]) as m5,
-        patch("src.econometrics.report.regress_h7", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H7_{cell_variant}"]) as m7,
-        patch("src.econometrics.report.regress_h8", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H8_{cell_variant}"]) as m8,
-        patch("src.econometrics.report.regress_h9", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H9_{cell_variant}"]) as m9,
-        patch("src.econometrics.report.regress_h10", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H10_{cell_variant}"]) as m10,
-        patch("src.econometrics.report.regress_h11", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H11_{cell_variant}"]) as m11,
+        patch("src.legacy.econometrics.report.regress_h1", return_value=fake_results["H1"]) as m1,
+        patch("src.legacy.econometrics.report.regress_h2", return_value=fake_results["H2"]) as m2,
+        patch("src.legacy.econometrics.report.regress_h3", return_value=fake_results["H3"]) as m3,
+        patch("src.legacy.econometrics.report.regress_h4", return_value=fake_results["H4"]) as m4,
+        patch("src.legacy.econometrics.report.regress_h5", return_value=fake_results["H5"]) as m5,
+        patch("src.legacy.econometrics.report.regress_h7", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H7_{cell_variant}"]) as m7,
+        patch("src.legacy.econometrics.report.regress_h8", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H8_{cell_variant}"]) as m8,
+        patch("src.legacy.econometrics.report.regress_h9", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H9_{cell_variant}"]) as m9,
+        patch("src.legacy.econometrics.report.regress_h10", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H10_{cell_variant}"]) as m10,
+        patch("src.legacy.econometrics.report.regress_h11", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H11_{cell_variant}"]) as m11,
     ):
         session = object()  # opaque sentinel -- run_all_hypotheses must pass it through unchanged
         results = run_all_hypotheses(session)
@@ -82,16 +82,16 @@ def test_run_all_hypotheses_threads_matrix_run_id_to_every_hypothesis():
     regress_hN functions in isolation."""
     fake_results = {h: _fake_result(h) for h in _ALL_HYPOTHESIS_LABELS}
     with (
-        patch("src.econometrics.report.regress_h1", return_value=fake_results["H1"]) as m1,
-        patch("src.econometrics.report.regress_h2", return_value=fake_results["H2"]) as m2,
-        patch("src.econometrics.report.regress_h3", return_value=fake_results["H3"]) as m3,
-        patch("src.econometrics.report.regress_h4", return_value=fake_results["H4"]) as m4,
-        patch("src.econometrics.report.regress_h5", return_value=fake_results["H5"]) as m5,
-        patch("src.econometrics.report.regress_h7", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H7_{cell_variant}"]) as m7,
-        patch("src.econometrics.report.regress_h8", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H8_{cell_variant}"]) as m8,
-        patch("src.econometrics.report.regress_h9", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H9_{cell_variant}"]) as m9,
-        patch("src.econometrics.report.regress_h10", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H10_{cell_variant}"]) as m10,
-        patch("src.econometrics.report.regress_h11", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H11_{cell_variant}"]) as m11,
+        patch("src.legacy.econometrics.report.regress_h1", return_value=fake_results["H1"]) as m1,
+        patch("src.legacy.econometrics.report.regress_h2", return_value=fake_results["H2"]) as m2,
+        patch("src.legacy.econometrics.report.regress_h3", return_value=fake_results["H3"]) as m3,
+        patch("src.legacy.econometrics.report.regress_h4", return_value=fake_results["H4"]) as m4,
+        patch("src.legacy.econometrics.report.regress_h5", return_value=fake_results["H5"]) as m5,
+        patch("src.legacy.econometrics.report.regress_h7", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H7_{cell_variant}"]) as m7,
+        patch("src.legacy.econometrics.report.regress_h8", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H8_{cell_variant}"]) as m8,
+        patch("src.legacy.econometrics.report.regress_h9", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H9_{cell_variant}"]) as m9,
+        patch("src.legacy.econometrics.report.regress_h10", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H10_{cell_variant}"]) as m10,
+        patch("src.legacy.econometrics.report.regress_h11", side_effect=lambda s, cell_variant, matrix_run_id=None: fake_results[f"H11_{cell_variant}"]) as m11,
     ):
         session = object()
         run_all_hypotheses(session, matrix_run_id="phase3-real-run-2026-08-04")

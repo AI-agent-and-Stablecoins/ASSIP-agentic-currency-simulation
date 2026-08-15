@@ -5,9 +5,9 @@ from sqlalchemy.orm import Session
 
 from database.models import Base, InterventionLogRecord, LLMDecisionRecord
 from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
-from src.econometrics.hypothesis_datasets import build_h4_dataset
-from src.econometrics.hypothesis_regressions import regress_h4
-from src.econometrics.regression_engine import RegressionResult
+from src.legacy.econometrics.hypothesis_datasets import build_h4_dataset
+from src.legacy.econometrics.hypothesis_regressions import regress_h4
+from src.legacy.econometrics.regression_engine import RegressionResult
 
 # Driving this hypothesis's test through a real run_matrix(...) call (as
 # H1-H3's tests do) is prohibitively slow here: H4 needs num_days > 120 for

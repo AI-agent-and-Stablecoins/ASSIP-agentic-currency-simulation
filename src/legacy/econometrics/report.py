@@ -13,7 +13,7 @@ from pathlib import Path
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from src.econometrics.hypothesis_regressions import (
+from src.legacy.econometrics.hypothesis_regressions import (
     regress_h1,
     regress_h2,
     regress_h3,
@@ -25,7 +25,7 @@ from src.econometrics.hypothesis_regressions import (
     regress_h10,
     regress_h11,
 )
-from src.econometrics.regression_engine import RegressionResult
+from src.legacy.econometrics.regression_engine import RegressionResult
 
 
 def run_all_hypotheses(session: Session, matrix_run_id: str | None = None) -> list[RegressionResult]:

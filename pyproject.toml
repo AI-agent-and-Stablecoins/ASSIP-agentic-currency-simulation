@@ -20,7 +20,9 @@ market-data = ["requests>=2.31"]
 # Phase 2: OpenRouter (src/llm/llm_router.py) and Polygon
 # (src/llm/market_intelligence.py) both go over HTTP via httpx.
 llm = ["httpx>=0.27"]
-# Phase 3 Plan 5: the H1-H5 hypothesis regression engine (src/econometrics/).
+# Phase 3 Plan 5: the H1-H5 hypothesis regression engine, archived (2026-08-14)
+# at src/legacy/econometrics/ -- superseded by the equilibrium-holdings/
+# equivalence-framework pivot, but still independently testable.
 econometrics = ["statsmodels>=0.14"]
 # Phase 3 dashboard (dashboard/): Streamlit UI plus psutil for cross-platform
 # subprocess liveness checks in dashboard/process_control.py.

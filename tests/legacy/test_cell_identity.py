@@ -1,6 +1,6 @@
 import pytest
 
-from src.econometrics.cell_identity import cell_key_from_run_id
+from src.legacy.econometrics.cell_identity import cell_key_from_run_id
 
 
 def test_cell_key_from_run_id_recovers_master():

@@ -5,9 +5,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from database.models import AgentRecord, Base, LLMDecisionRecord, TimestepLogRecord
-from src.econometrics.hypothesis_datasets import build_h5_dataset
-from src.econometrics.hypothesis_regressions import regress_h5
-from src.econometrics.regression_engine import RegressionResult
+from src.legacy.econometrics.hypothesis_datasets import build_h5_dataset
+from src.legacy.econometrics.hypothesis_regressions import regress_h5
+from src.legacy.econometrics.regression_engine import RegressionResult
 
 # Driving this hypothesis's test through a real run_matrix(...) call hits the
 # same wall H1-H4 already hit (see tests/test_hypothesis_h4.py's header):

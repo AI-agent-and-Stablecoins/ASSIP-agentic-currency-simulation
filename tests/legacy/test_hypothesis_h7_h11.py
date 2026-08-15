@@ -5,7 +5,7 @@ from database.models import Base
 from src.currencies.gold_token import GoldBackedConfig
 from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
 from src.currencies.tokenized_deposit import TokenizedDepositConfig
-from src.econometrics.hypothesis_datasets import (
+from src.legacy.econometrics.hypothesis_datasets import (
     build_h7_dataset,
     build_h8_dataset,
     build_h9_dataset,
@@ -13,14 +13,14 @@ from src.econometrics.hypothesis_datasets import (
     build_h11_dataset,
     build_sandbox_preference_dataset,
 )
-from src.econometrics.hypothesis_regressions import (
+from src.legacy.econometrics.hypothesis_regressions import (
     regress_h7,
     regress_h8,
     regress_h9,
     regress_h10,
     regress_h11,
 )
-from src.econometrics.regression_engine import RegressionResult
+from src.legacy.econometrics.regression_engine import RegressionResult
 from src.simulation.matrix_runner import run_matrix
 
 MODEL_CANDIDATES = ["vendor/fake-model"]

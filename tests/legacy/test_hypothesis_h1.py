@@ -5,9 +5,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from database.models import AgentStateRecord, Base, LLMDecisionRecord
-from src.econometrics.hypothesis_datasets import build_h1_dataset
-from src.econometrics.hypothesis_regressions import regress_h1
-from src.econometrics.regression_engine import RegressionResult
+from src.legacy.econometrics.hypothesis_datasets import build_h1_dataset
+from src.legacy.econometrics.hypothesis_regressions import regress_h1
+from src.legacy.econometrics.regression_engine import RegressionResult
 from src.simulation.matrix_runner import run_matrix
 
 MODEL_CANDIDATES = ["vendor/fake-model"]

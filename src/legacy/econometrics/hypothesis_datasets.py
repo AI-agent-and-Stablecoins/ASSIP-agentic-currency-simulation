@@ -16,7 +16,7 @@ from src.currencies.currency import CurrencyConfig, load_currency_universe
 from src.currencies.gold_token import GoldBackedConfig
 from src.currencies.sandbox_currencies import SANDBOX_CURRENCY_PAIRS
 from src.currencies.tokenized_deposit import TokenizedDepositConfig
-from src.econometrics.cell_identity import cell_key_from_run_id
+from src.legacy.econometrics.cell_identity import cell_key_from_run_id
 from src.economy.fx_tax import currency_zone_of
 
 # Every LLM currency-choice decision is one observation (Plan 5 whole-branch

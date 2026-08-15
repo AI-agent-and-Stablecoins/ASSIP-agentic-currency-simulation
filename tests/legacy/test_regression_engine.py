@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.econometrics.regression_engine import RegressionResult, fit_clustered_logit
+from src.legacy.econometrics.regression_engine import RegressionResult, fit_clustered_logit
 
 
 def _synthetic_dataset(n_agents: int = 50, decisions_per_agent: int = 20, seed: int = 0) -> pd.DataFrame:
