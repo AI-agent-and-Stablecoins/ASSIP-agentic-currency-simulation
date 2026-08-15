@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 
 from database.session import create_all_tables, new_session
 from src.economy.hypothesis_scenarios import baseline_cell_keys, build_hypothesis_cell_specs
+from src.economy.synthetic_hypothesis_scenarios import build_synthetic_hypothesis_cell_specs
 from src.llm.llm_router import build_openrouter_client, get_cumulative_usage
 from src.llm.market_intelligence import build_polygon_client
 from src.simulation.hypothesis_matrix_runner import run_hypothesis_matrix
@@ -31,6 +32,9 @@ from src.utils.constants import CONFIG_ROOT, REPO_ROOT
 load_dotenv(REPO_ROOT / ".env")
 
 MATRIX_RUN_ID = "hyp-real-run-2026-08-14"  # change this for a new/different run -- reusing an id resumes it
+
+TRACK = "real"  # "real" (default) or "synthetic" -- run both separately for the dual-method robustness check.
+# TRACK = "synthetic"  # uncomment to launch the synthetic-coin track instead (baseline-only, no cell_keys filter)
 
 
 def load_model_roster() -> list[str]:
@@ -84,16 +88,32 @@ def main() -> None:
     polygon_key = os.getenv("POLYGON_API_KEY") or os.getenv("Polygon_API_KEY")
     polygon_client = build_polygon_client(polygon_key) if polygon_key else None
 
-    checkpoint_dir = REPO_ROOT / "checkpoints" / MATRIX_RUN_ID
+    # track="real" keeps the exact original checkpoint path (no track
+    # segment) -- do not change this, it must stay compatible with any
+    # already-running real-track study's existing checkpoint files.
+    checkpoint_dir = (
+        REPO_ROOT / "checkpoints" / MATRIX_RUN_ID
+        if TRACK == "real"
+        else REPO_ROOT / "checkpoints" / MATRIX_RUN_ID / TRACK
+    )
 
-    selected_specs = [
-        spec
-        for spec in build_hypothesis_cell_specs()
-        if (HYPOTHESES is None or spec.hypothesis in HYPOTHESES)
-        and (CELL_KEYS is None or spec.key in CELL_KEYS)
-    ]
+    if TRACK == "real":
+        selected_specs = [
+            spec
+            for spec in build_hypothesis_cell_specs()
+            if (HYPOTHESES is None or spec.hypothesis in HYPOTHESES)
+            and (CELL_KEYS is None or spec.key in CELL_KEYS)
+        ]
+    else:
+        # Synthetic track is baseline-only (no cross-border/event variants),
+        # so cell_keys doesn't apply -- HYPOTHESES still filters which of
+        # the 11 hypotheses run.
+        selected_specs = [
+            spec for spec in build_synthetic_hypothesis_cell_specs() if HYPOTHESES is None or spec.hypothesis in HYPOTHESES
+        ]
+
     print(
-        f"Launching run_hypothesis_matrix: matrix_run_id={MATRIX_RUN_ID} "
+        f"Launching run_hypothesis_matrix: matrix_run_id={MATRIX_RUN_ID} track={TRACK} "
         f"hypotheses={HYPOTHESES or 'ALL'} cell_keys={CELL_KEYS or 'ALL'} ({len(selected_specs)} cells) "
         f"utility_types={UTILITY_TYPES or 'ALL'} seeds={SEEDS} num_days={NUM_DAYS} "
         f"checkpoint_dir={checkpoint_dir}",
@@ -110,7 +130,8 @@ def main() -> None:
         matrix_run_id=MATRIX_RUN_ID,
         utility_types=UTILITY_TYPES,
         hypotheses=HYPOTHESES,
-        cell_keys=CELL_KEYS,
+        cell_keys=CELL_KEYS if TRACK == "real" else None,
+        track=TRACK,
         progress_callback=progress,
         checkpoint_dir=checkpoint_dir,
     )
