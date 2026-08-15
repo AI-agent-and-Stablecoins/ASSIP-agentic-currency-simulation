@@ -22,7 +22,7 @@ import yaml
 from dotenv import load_dotenv
 
 from database.session import create_all_tables, new_session
-from src.economy.hypothesis_scenarios import build_hypothesis_cell_specs
+from src.economy.hypothesis_scenarios import baseline_cell_keys, build_hypothesis_cell_specs
 from src.llm.llm_router import build_openrouter_client, get_cumulative_usage
 from src.llm.market_intelligence import build_polygon_client
 from src.simulation.hypothesis_matrix_runner import run_hypothesis_matrix
@@ -48,6 +48,11 @@ NUM_DAYS = 365
 SEEDS = [0]
 HYPOTHESES = None  # None -> all 11 hypotheses' 24 cells
 UTILITY_TYPES = None  # None -> all 3: crra, cara, epstein_zin_proxy
+CELL_KEYS = None  # None -> every selected cell (baseline + cross-border + event)
+
+# Baseline-only (New info.pdf's "Section 1: Baseline model" -- skips every
+# cross-border and event-based variant): uncomment this one line.
+# CELL_KEYS = baseline_cell_keys()
 
 # Smoke-test scope (uncomment this block and comment out the real-study
 # block above for a fast, cheap first check that everything works):
@@ -56,6 +61,7 @@ UTILITY_TYPES = None  # None -> all 3: crra, cara, epstein_zin_proxy
 # SEEDS = [0]
 # HYPOTHESES = ["H3"]
 # UTILITY_TYPES = ["crra"]
+# CELL_KEYS = None
 
 
 def progress(cell_key: str, seed: int, utility_type: str, day: int) -> None:
@@ -81,11 +87,14 @@ def main() -> None:
     checkpoint_dir = REPO_ROOT / "checkpoints" / MATRIX_RUN_ID
 
     selected_specs = [
-        spec for spec in build_hypothesis_cell_specs() if HYPOTHESES is None or spec.hypothesis in HYPOTHESES
+        spec
+        for spec in build_hypothesis_cell_specs()
+        if (HYPOTHESES is None or spec.hypothesis in HYPOTHESES)
+        and (CELL_KEYS is None or spec.key in CELL_KEYS)
     ]
     print(
         f"Launching run_hypothesis_matrix: matrix_run_id={MATRIX_RUN_ID} "
-        f"hypotheses={HYPOTHESES or 'ALL'} ({len(selected_specs)} cells) "
+        f"hypotheses={HYPOTHESES or 'ALL'} cell_keys={CELL_KEYS or 'ALL'} ({len(selected_specs)} cells) "
         f"utility_types={UTILITY_TYPES or 'ALL'} seeds={SEEDS} num_days={NUM_DAYS} "
         f"checkpoint_dir={checkpoint_dir}",
         flush=True,
@@ -101,6 +110,7 @@ def main() -> None:
         matrix_run_id=MATRIX_RUN_ID,
         utility_types=UTILITY_TYPES,
         hypotheses=HYPOTHESES,
+        cell_keys=CELL_KEYS,
         progress_callback=progress,
         checkpoint_dir=checkpoint_dir,
     )

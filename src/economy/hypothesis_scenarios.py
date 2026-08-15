@@ -120,6 +120,14 @@ def build_hypothesis_cell_specs() -> list[HypothesisCellSpec]:
     return specs
 
 
+def baseline_cell_keys() -> list[str]:
+    """Every baseline (non-cross-border, non-event) cell key -- for a
+    run_hypothesis_matrix(cell_keys=...) call that runs only New info.pdf's
+    "Section 1: Baseline model" cells, skipping the cross-border and
+    event-based variants."""
+    return [spec.key for spec in build_hypothesis_cell_specs() if not spec.cross_border and spec.event_shock is None]
+
+
 # 340, not 200: master_simulation.yaml's last shock is at day 320, and its
 # 190/210 pair (capital_controls/crisis_warning+depeg_event) sits only 20
 # days apart -- no day in that neighborhood is >=15 days clear of both

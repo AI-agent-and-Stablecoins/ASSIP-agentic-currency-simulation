@@ -12,6 +12,7 @@ from src.economy.equivalence_framework import EQUIVALENCE_COMPARISONS
 from src.economy.hypothesis_scenarios import (
     HYPOTHESIS_CHAIN_PINS,
     HYPOTHESIS_CURRENCIES,
+    baseline_cell_keys,
     build_hypothesis_cell_specs,
 )
 from src.economy.shocks import load_scenario
@@ -368,3 +369,40 @@ def test_run_id_contains_utility_type_component():
     assert failures == []
     row = session.query(SimulationRunRecord).filter(SimulationRunRecord.run_id.like("%-H1-%")).one()
     assert "crra" in row.run_id
+
+
+def test_cell_keys_restricts_to_baseline_only_excluding_cross_border_and_event():
+    session = _session()
+    client = _mock_client("USDC", "ethereum")
+
+    results, failures = run_hypothesis_matrix(
+        model_candidates=[MODEL_ID],
+        seeds=[0],
+        num_days=2,
+        openrouter_client=client,
+        session=session,
+        matrix_run_id="baseline-only-test",
+        hypotheses=["H1"],
+        cell_keys=baseline_cell_keys(),
+        utility_types=["crra"],
+    )
+
+    assert failures == []
+    assert len(results) == 1  # H1's baseline only -- not H1_cb/H1_depeg_event/H1_bank_failure
+    assert results[0].cell_key == "H1"
+
+
+def test_cell_keys_rejects_unknown_key():
+    session = _session()
+    client = _mock_client("USDC", "ethereum")
+
+    with pytest.raises(ValueError):
+        run_hypothesis_matrix(
+            model_candidates=[MODEL_ID],
+            seeds=[0],
+            num_days=2,
+            openrouter_client=client,
+            session=session,
+            matrix_run_id="bad-cell-key-test",
+            cell_keys=["H1_not_a_real_variant"],
+        )

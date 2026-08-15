@@ -5,6 +5,7 @@ from src.economy.hypothesis_scenarios import (
     EVENT_BASED_HYPOTHESES,
     HYPOTHESIS_CURRENCIES,
     _EVENT_DAY,
+    baseline_cell_keys,
     build_hypothesis_cell_specs,
     build_hypothesis_event_scenario,
     scenario_for,
@@ -176,3 +177,15 @@ def test_scenario_for_returns_event_scenario_for_event_spec():
 
     assert result == build_hypothesis_event_scenario(event_spec, base_scenario)
     assert result is not base_scenario
+
+
+def test_baseline_cell_keys_excludes_every_cross_border_and_event_spec():
+    keys = baseline_cell_keys()
+    specs_by_key = {spec.key: spec for spec in build_hypothesis_cell_specs()}
+
+    assert len(keys) == 11
+    assert set(keys) == {f"H{i}" for i in range(1, 12)}
+    for key in keys:
+        spec = specs_by_key[key]
+        assert not spec.cross_border
+        assert spec.event_shock is None

@@ -191,6 +191,7 @@ def run_hypothesis_matrix(
     polygon_client: httpx.Client | None = None,
     utility_types: list[str] | None = None,
     hypotheses: list[str] | None = None,
+    cell_keys: list[str] | None = None,
     progress_callback: Callable[[str, int, str, int], None] | None = None,
     checkpoint_dir: Path | None = None,
     llm_max_workers: int = 1,
@@ -216,7 +217,15 @@ def run_hypothesis_matrix(
     `HYPOTHESIS_UTILITY_TYPES`. `hypotheses`, if `None` (the default), runs
     every spec from `build_hypothesis_cell_specs()`; otherwise restricts to
     specs whose `.hypothesis` is in the list (raises `ValueError` if any
-    requested hypothesis matches no spec).
+    requested hypothesis matches no spec). `cell_keys`, if given, further
+    restricts to specs whose `.key` is in the list (raises `ValueError` if
+    any requested key matches no spec) -- use this to select baseline-only,
+    cross-border-only, or event-only cells (`hypotheses` alone can't: it
+    selects a whole hypothesis's baseline + cross-border + event variants
+    together). Both filters apply together (AND) when both are given.
+    `src.economy.hypothesis_scenarios.baseline_cell_keys()` returns every
+    baseline (non-cross-border, non-event) key for a "baseline model only"
+    run.
 
     `checkpoint_dir`/resume semantics and `progress_callback` timing exactly
     mirror `run_matrix`'s (see that module's docstring), with the extra
@@ -247,6 +256,12 @@ def run_hypothesis_matrix(
         specs_to_run = [spec for spec in all_specs if spec.hypothesis in hypotheses]
     else:
         specs_to_run = all_specs
+
+    if cell_keys is not None:
+        unknown_keys = set(cell_keys) - {spec.key for spec in all_specs}
+        if unknown_keys:
+            raise ValueError(f"cell_keys contains unknown cell key(s): {sorted(unknown_keys)}")
+        specs_to_run = [spec for spec in specs_to_run if spec.key in cell_keys]
 
     # An event-based spec's shock is scheduled at day _EVENT_DAY -- a
     # num_days short of that fires it never, producing an "event" cell
