@@ -31,6 +31,7 @@ class CurrencyConfig(BaseModel):
     peg_error: float = Field(ge=0.0)
     issuer_risk: float = Field(ge=0.0, le=1.0)
     genius_compliant: bool
+    bid_ask_spread: float | None = Field(default=None, ge=0.0)
 
 
 # Phase 1: a "Currency" is just its validated config. Kept as an alias so
