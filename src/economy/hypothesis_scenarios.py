@@ -135,8 +135,24 @@ _EVENT_MAGNITUDE = {
 
 
 def build_hypothesis_event_scenario(spec: HypothesisCellSpec, base_scenario: ScenarioConfig) -> ScenarioConfig:
-    macro_shocks = [s for s in base_scenario.shocks if s.target_currency is None]
-
+    """Additive, not replacing: keeps every one of base_scenario's shocks
+    (including its other currency-targeted ones) and adds exactly one new
+    event shock on top -- per New info.pdf's own framing of this section
+    ("run through a depeg event and see how the attitudes of the agents
+    change" / "run through a financial crisis"), the point is to isolate the
+    marginal effect of introducing ONE new event, which requires holding the
+    rest of the scenario -- including its baseline variant's own shock
+    schedule -- constant. An earlier revision dropped every currency-targeted
+    shock first (mirroring src/economy/sandbox_scenarios.py's
+    build_sandbox_scenario, where dropping is necessary because those shocks
+    target SYNTHETIC symbols that don't exist in a sandbox's universe at
+    all); real currencies don't have that problem
+    (apply_currency_shock/TrustLedger.update already no-op safely on any
+    currency outside a given hypothesis-sim's restricted universe), so there
+    was nothing forcing the same drop here, and doing it anyway made an
+    event cell strictly LESS eventful than its own baseline variant instead
+    of "baseline plus one new event."
+    """
     event_shock = ShockEvent(
         day=_EVENT_DAY,
         type=ShockType(spec.event_shock),
@@ -147,7 +163,7 @@ def build_hypothesis_event_scenario(spec: HypothesisCellSpec, base_scenario: Sce
     return base_scenario.model_copy(
         update={
             "name": f"{spec.key}_event",
-            "shocks": [*macro_shocks, event_shock],
+            "shocks": [*base_scenario.shocks, event_shock],
         },
         deep=True,
     )

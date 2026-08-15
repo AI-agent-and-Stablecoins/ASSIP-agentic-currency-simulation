@@ -4,6 +4,7 @@ from src.economy.hypothesis_scenarios import (
     CROSS_BORDER_HYPOTHESES,
     EVENT_BASED_HYPOTHESES,
     HYPOTHESIS_CURRENCIES,
+    _EVENT_DAY,
     build_hypothesis_cell_specs,
     build_hypothesis_event_scenario,
     scenario_for,
@@ -137,21 +138,25 @@ def test_h1_event_keys_are_h1_depeg_event_and_h1_bank_failure():
     assert keys == {"H1_depeg_event", "H1_bank_failure"}
 
 
-def test_build_hypothesis_event_scenario_appends_one_event_shock_and_keeps_macro_shocks():
+def test_build_hypothesis_event_scenario_adds_one_event_shock_on_top_of_every_base_shock():
+    # Additive, not replacing: an event cell must be its own baseline variant
+    # PLUS one new event, so the comparison isolates just that event's
+    # marginal effect (per New info.pdf's "run through a depeg event and see
+    # how the attitudes of the agents change" framing) -- not a scenario with
+    # fewer real shocks than its own baseline.
     base_scenario = load_scenario("master_simulation")
     specs = build_hypothesis_cell_specs()
     event_spec = next(s for s in specs if s.hypothesis == "H1" and s.event_shock is not None)
 
     result = build_hypothesis_event_scenario(event_spec, base_scenario)
 
-    currency_shocks = [s for s in result.shocks if s.target_currency is not None]
-    assert len(currency_shocks) == 1
-    assert currency_shocks[0].target_currency == event_spec.event_target_currency
-    assert currency_shocks[0].type.value == event_spec.event_shock
+    assert result.shocks[: len(base_scenario.shocks)] == base_scenario.shocks
+    assert len(result.shocks) == len(base_scenario.shocks) + 1
 
-    base_macro_shocks = [s for s in base_scenario.shocks if s.target_currency is None]
-    result_macro_shocks = [s for s in result.shocks if s.target_currency is None]
-    assert result_macro_shocks == base_macro_shocks
+    new_shock = result.shocks[-1]
+    assert new_shock.target_currency == event_spec.event_target_currency
+    assert new_shock.type.value == event_spec.event_shock
+    assert new_shock.day == _EVENT_DAY
 
 
 def test_scenario_for_returns_base_scenario_unmodified_for_baseline_spec():
