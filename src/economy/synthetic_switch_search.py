@@ -62,6 +62,7 @@ def _real_traits(env: Environment, symbol: str) -> dict[str, float]:
         "governance_score": currency.governance_score,
         "bid_ask_spread": currency.bid_ask_spread,
         "peg_error": currency.peg_error,
+        "medium": currency.peg,
     }
     chain_name = env.currency_chain_pins.get(symbol)
     if chain_name is not None:

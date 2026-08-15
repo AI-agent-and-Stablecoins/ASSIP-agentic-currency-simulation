@@ -23,6 +23,7 @@ class CurrencyChainOption(BaseModel):
     gas_fee: float
     finality_seconds: float
     genius_compliant: bool
+    bid_ask_spread: float | None = None
 
 
 def generate_candidates(
@@ -62,6 +63,7 @@ def generate_candidates(
                     gas_fee=get_gas_fee(chain),
                     finality_seconds=chain.finality_seconds,
                     genius_compliant=currency.genius_compliant,
+                    bid_ask_spread=currency.bid_ask_spread,
                 )
             )
     return options

@@ -398,6 +398,59 @@ def test_cell_keys_restricts_to_baseline_only_excluding_cross_border_and_event()
     assert results[0].cell_key == "H1"
 
 
+def test_synthetic_comparisons_fixed_and_varied_currencies_differ_on_the_non_swept_dimension():
+    """Regression test for a whole-plan-review-caught bug: an earlier
+    revision made fixed_currency and varied_currency AGREE on every
+    dimension except the swept one, which measures no trade-off at all
+    (nothing for the swept dimension to compensate FOR). The two coins must
+    differ on the non-swept ("differentiator") dimension, mirroring the
+    real-coin track's own natural example (H3: USDT=low-governance/
+    high-liquidity vs. TDUSD=high-governance/low-liquidity)."""
+    from src.currencies.synthetic_hypothesis_currencies import SYNTHETIC_DIMENSION_PAIRS
+
+    synthetic_specs = {spec.hypothesis: spec for spec in build_synthetic_hypothesis_cell_specs()}
+
+    for hypothesis in ("H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9", "H10", "H11"):
+        spec = synthetic_specs[hypothesis]
+        comparison = _synthetic_equivalence_comparison_for(hypothesis, spec.currencies, spec.chain_pins)
+        fixed = spec.currencies[comparison.fixed_currency]
+        varied = spec.currencies[comparison.varied_currency]
+
+        dims = SYNTHETIC_DIMENSION_PAIRS[hypothesis]
+        differing_fields = set()
+        if fixed.governance_score != varied.governance_score:
+            differing_fields.add("governance")
+        if fixed.peg != varied.peg:
+            differing_fields.add("medium")
+        if fixed.bid_ask_spread != varied.bid_ask_spread:
+            differing_fields.add("liquidity")
+        if fixed.peg_error != varied.peg_error:
+            differing_fields.add("volatility")
+
+        # The two coins must differ on EXACTLY one of the two tested
+        # dimensions -- the non-swept ("differentiator") one -- not zero
+        # (the bug) and not both (a confound). gas_fee lives on the chain
+        # pin, not the CurrencyConfig, so it's checked separately below when
+        # it's one of the two tested dimensions.
+        non_gas_dims = {d for d in dims if d != "gas_fee"}
+        assert differing_fields & non_gas_dims, (
+            f"{hypothesis}: fixed_currency and varied_currency don't differ on any tested "
+            f"non-gas dimension {non_gas_dims} -- measures no trade-off"
+        )
+        assert not (differing_fields - non_gas_dims), (
+            f"{hypothesis}: fixed_currency and varied_currency differ on an UNTESTED dimension "
+            f"{differing_fields - non_gas_dims} -- a confound"
+        )
+
+        if "gas_fee" in dims:
+            # gas_fee is only ever the swept dimension (never the
+            # differentiator, since governance/medium/liquidity/volatility
+            # always come first in SYNTHETIC_DIMENSION_PAIRS whenever paired
+            # with gas_fee) -- so it's expected to be overridden during the
+            # search rather than checked as a static differentiator here.
+            assert comparison.varied_field == "gas_fee"
+
+
 def test_synthetic_h3_cell_persists_holdings_and_indifference_points():
     """End-to-end synthetic-track test: track="synthetic" for H3 must persist
     CohortHoldingsRecord rows (H3 itself, not just H1 -- per design spec §6,

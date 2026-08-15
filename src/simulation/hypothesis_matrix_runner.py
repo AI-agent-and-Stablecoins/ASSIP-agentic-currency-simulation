@@ -249,36 +249,47 @@ def _build_fresh_cell_environment(
 # dimension pair into one concrete (fixed_currency, varied_currency,
 # varied_field, levels) tuple.
 #
-# JUDGMENT CALL (flagged per the plan's explicit request -- see this
-# module's final report for the full writeup): for a hypothesis whose tested
-# pair is (dimension1, dimension2), one dimension is held FIXED (both
-# fixed_currency and varied_currency agree on it) and the other is VARIED
-# (fixed_currency and varied_currency differ on it, at its two extreme
-# corners) so the search question is "does varying dimension2 compensate for
-# dimension1 being fixed at its worse level":
-#   - If "medium" (peg zone) is one of the two tested dimensions, it is
-#     ALWAYS the fixed one, held at NEUTRAL_FIXED_VALUES["medium"] ("USD")
-#     -- "medium" is categorical (USD/EUR/XAU), not one of
+# FIXED (post-whole-plan-review): an earlier revision made fixed_currency and
+# varied_currency AGREE on the non-swept ("differentiator") dimension and
+# differ only on the swept one -- which measures no trade-off at all (the two
+# coins were identical on every dimension except the one being searched, so
+# there was nothing for the searched dimension to compensate FOR). The
+# correct construction, matching the real-coin track's own natural example
+# (H3: fixed_currency=USDT is low-governance/high-liquidity, varied_currency=
+# TDUSD is high-governance/low-liquidity -- two DIFFERENT real coins sitting
+# at opposite corners of the governance x liquidity grid) is:
+#   - `differentiator_dim`: the dimension fixed_currency and varied_currency
+#     DIFFER on -- this is the trait being "compensated for". If "medium"
+#     (peg zone) is one of the two tested dimensions, it is ALWAYS the
+#     differentiator (medium is categorical, not one of
 #     `SyntheticEquivalenceComparison.varied_field`'s four supported numeric
-#     fields, so it can never be the varied dimension. This is a deliberate
-#     departure from "first tuple entry = fixed, second = varied" for H2
-#     only (`SYNTHETIC_DIMENSION_PAIRS["H2"] == ("governance", "medium")`,
-#     i.e. medium is nominally second/"varied" by tuple position) --
-#     forced by the type system, not a free choice.
-#   - Otherwise (both tested dimensions numeric), the FIRST tuple entry is
-#     held fixed at its least-attractive (worst) level; the SECOND is varied
-#     across its full level tuple.
-#   - `fixed_currency` = the coin at (fixed_dim = fixed value, varied_dim =
-#     worst/least-attractive level). `varied_currency` = the coin at
-#     (fixed_dim = SAME fixed value, varied_dim = best/most-attractive
-#     level) -- a different coin from fixed_currency, agreeing on the fixed
-#     dimension and differing only on the varied one. Note that
-#     `varied_currency`'s own varied-dimension level is never actually read
-#     by `_agent_discrete_switch_point` (it gets overridden by each of
-#     `comparison.levels` in turn) -- picking "best" rather than any other
-#     level is purely for a clean, human-readable "worst-vs-best corner"
-#     comparison identity, not a computational necessity.
+#     fields, so it can never be the swept dimension) -- a deliberate
+#     departure from "first tuple entry = differentiator" for H2 only
+#     (`SYNTHETIC_DIMENSION_PAIRS["H2"] == ("governance", "medium")`).
+#     Otherwise (both tested dimensions numeric), the FIRST tuple entry is
+#     the differentiator.
+#   - `swept_dim`: the OTHER tested dimension -- what `comparison.levels`
+#     sweeps. Always numeric.
+#   - `fixed_currency` = the coin at (differentiator = its LOW/worst value,
+#     swept_dim = its BEST value) -- a coin that's bad on the differentiator
+#     but otherwise excellent (its swept-dim value becomes `fixed_value`, the
+#     Y reference the compensation is measured against).
+#   - `varied_currency` = the coin at (differentiator = its HIGH/best value,
+#     swept_dim = its WORST value) -- a coin that's good on the
+#     differentiator but starts out with the flaw being compensated for.
+#     Note `varied_currency`'s own swept-dim value is never actually read by
+#     `_agent_discrete_switch_point` (each of `comparison.levels` overrides
+#     it in turn) -- starting it at "worst" is for a clean, human-readable
+#     comparison identity (mirroring TDUSD's real, genuinely-low liquidity),
+#     not a computational necessity.
+#   - `medium`'s two differentiator values, when it's the differentiator:
+#     `NEUTRAL_FIXED_VALUES["medium"]` ("USD", the low/reference side) and
+#     `_MEDIUM_ALTERNATE_LEVEL` ("EUR", the high/alternate side) -- a
+#     categorical zone choice has no natural high/low ordering, so this is a
+#     deliberate, fixed, documented convention, not a discovered result.
 # ---------------------------------------------------------------------------
+
+_MEDIUM_ALTERNATE_LEVEL = "EUR"
 
 _SYNTHETIC_DIM_TO_FIELD: dict[str, str] = {
     "governance": "governance_score",
@@ -316,33 +327,39 @@ def _synthetic_equivalence_comparison_for(
     """Builds the ONE `SyntheticEquivalenceComparison` for `hypothesis` (H2-H11
     only -- H1 is medium-alone, holdings-only, and must not be passed here).
     See this module's judgment-call comment above for the fixed/varied coin
-    selection rule."""
+    selection rule (opposite corners of the two tested dimensions)."""
     dims = SYNTHETIC_DIMENSION_PAIRS[hypothesis]
 
     if "medium" in dims:
-        fixed_dim = "medium"
-        varied_dim = dims[0] if dims[1] == "medium" else dims[1]
-        fixed_dim_value: float | str = NEUTRAL_FIXED_VALUES["medium"]
+        differentiator_dim = "medium"
+        swept_dim = dims[0] if dims[1] == "medium" else dims[1]
+        low_differentiator_value: float | str = NEUTRAL_FIXED_VALUES["medium"]
+        high_differentiator_value: float | str = _MEDIUM_ALTERNATE_LEVEL
     else:
-        fixed_dim, varied_dim = dims
-        fixed_levels = _SYNTHETIC_DIM_LEVELS[fixed_dim]
-        fixed_dim_value = min(fixed_levels) if _SYNTHETIC_DIM_HIGHER_IS_BETTER[fixed_dim] else max(fixed_levels)
+        differentiator_dim, swept_dim = dims
+        differentiator_levels = _SYNTHETIC_DIM_LEVELS[differentiator_dim]
+        differentiator_higher_is_better = _SYNTHETIC_DIM_HIGHER_IS_BETTER[differentiator_dim]
+        low_differentiator_value = (
+            min(differentiator_levels) if differentiator_higher_is_better else max(differentiator_levels)
+        )
+        high_differentiator_value = (
+            max(differentiator_levels) if differentiator_higher_is_better else min(differentiator_levels)
+        )
 
-    varied_field = _SYNTHETIC_DIM_TO_FIELD[varied_dim]
-    varied_levels = _SYNTHETIC_DIM_LEVELS[varied_dim]
-    higher_is_better = _SYNTHETIC_DIM_HIGHER_IS_BETTER[varied_dim]
-    worst_varied = min(varied_levels) if higher_is_better else max(varied_levels)
-    best_varied = max(varied_levels) if higher_is_better else min(varied_levels)
+    varied_field = _SYNTHETIC_DIM_TO_FIELD[swept_dim]
+    swept_levels = _SYNTHETIC_DIM_LEVELS[swept_dim]
+    swept_higher_is_better = _SYNTHETIC_DIM_HIGHER_IS_BETTER[swept_dim]
+    best_swept = max(swept_levels) if swept_higher_is_better else min(swept_levels)
+    worst_swept = min(swept_levels) if swept_higher_is_better else max(swept_levels)
 
     fixed_currency: str | None = None
     varied_currency: str | None = None
     for symbol, currency in currencies.items():
-        if _synthetic_dim_value(currency, symbol, chain_pins, fixed_dim) != fixed_dim_value:
-            continue
-        value_on_varied_dim = _synthetic_dim_value(currency, symbol, chain_pins, varied_dim)
-        if value_on_varied_dim == worst_varied:
+        differentiator_value = _synthetic_dim_value(currency, symbol, chain_pins, differentiator_dim)
+        swept_value = _synthetic_dim_value(currency, symbol, chain_pins, swept_dim)
+        if differentiator_value == low_differentiator_value and swept_value == best_swept:
             fixed_currency = symbol
-        elif value_on_varied_dim == best_varied:
+        elif differentiator_value == high_differentiator_value and swept_value == worst_swept:
             varied_currency = symbol
 
     if fixed_currency is None or varied_currency is None:
@@ -357,7 +374,7 @@ def _synthetic_equivalence_comparison_for(
         fixed_currency=fixed_currency,
         varied_currency=varied_currency,
         varied_field=varied_field,
-        levels=tuple(varied_levels),
+        levels=tuple(swept_levels),
     )
 
 
@@ -422,10 +439,14 @@ def run_hypothesis_matrix(
 
     `checkpoint_dir`/resume semantics and `progress_callback` timing exactly
     mirror `run_matrix`'s (see that module's docstring), with the extra
-    `utility_type` axis threaded through `run_id`
-    (`f"{matrix_run_id}-{track}-{spec.key}-{utility_type}-seed{seed}"`),
-    `progress_callback(cell_key, seed, utility_type, day)`, and `failures`'
-    tuple shape.
+    `utility_type` axis threaded through `run_id`:
+    `f"{matrix_run_id}-{spec.key}-{utility_type}-seed{seed}"` for
+    `track="real"` (byte-for-byte the original shape, already live in
+    production databases), or
+    `f"{matrix_run_id}-{track}-{spec.key}-{utility_type}-seed{seed}"` for
+    `track="synthetic"` (a distinguishing segment, since this track has no
+    pre-existing data to stay compatible with). `progress_callback(cell_key,
+    seed, utility_type, day)` and `failures`' tuple shape are unaffected.
     """
     if openrouter_client is None:
         raise ValueError(

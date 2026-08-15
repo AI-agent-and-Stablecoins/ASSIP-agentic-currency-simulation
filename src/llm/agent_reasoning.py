@@ -181,6 +181,7 @@ def _format_candidates_block(candidates: list[CurrencyChainOption]) -> str:
         f"- {option.currency_symbol} on {option.chain_name}: governance_score={option.governance_score}, "
         f"liquidity_score={option.liquidity_score}, peg_error={option.peg_error}, gas_fee={option.gas_fee}, "
         f"finality_seconds={option.finality_seconds}, genius_compliant={option.genius_compliant}"
+        + (f", bid_ask_spread={option.bid_ask_spread}" if option.bid_ask_spread is not None else "")
         for option in candidates
     ]
     return "\n".join(lines)
