@@ -22,7 +22,12 @@ import yaml
 from dotenv import load_dotenv
 
 from database.session import create_all_tables, new_session
-from src.economy.hypothesis_scenarios import baseline_cell_keys, build_hypothesis_cell_specs
+from src.economy.hypothesis_scenarios import (
+    baseline_cell_keys,
+    build_hypothesis_cell_specs,
+    cross_border_cell_keys,
+    event_based_cell_keys,
+)
 from src.economy.synthetic_hypothesis_scenarios import build_synthetic_hypothesis_cell_specs
 from src.llm.llm_router import build_openrouter_client, get_cumulative_usage
 from src.llm.market_intelligence import build_polygon_client
@@ -57,6 +62,18 @@ CELL_KEYS = None  # None -> every selected cell (baseline + cross-border + event
 # Baseline-only (New info.pdf's "Section 1: Baseline model" -- skips every
 # cross-border and event-based variant): uncomment this one line.
 # CELL_KEYS = baseline_cell_keys()
+
+# Cross-border-only (New info.pdf's "Section 2: Cross Border transactions"
+# -- H1/H2/H6/H7/H8's cross-border variants, skips baseline and event-based):
+# CELL_KEYS = cross_border_cell_keys()
+
+# Event-based-only (New info.pdf's "Section 3: Event based analysis" --
+# H1/H2/H4/H9's depeg_event/bank_failure variants, skips baseline and
+# cross-border): note num_days must exceed src.economy.hypothesis_scenarios'
+# _EVENT_DAY (340) for the event to actually fire -- a short num_days here
+# silently produces a "no-op event" cell (run_hypothesis_matrix warns about
+# this at launch time if it detects it).
+# CELL_KEYS = event_based_cell_keys()
 
 # Smoke-test scope (uncomment this block and comment out the real-study
 # block above for a fast, cheap first check that everything works):

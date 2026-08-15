@@ -8,6 +8,8 @@ from src.economy.hypothesis_scenarios import (
     baseline_cell_keys,
     build_hypothesis_cell_specs,
     build_hypothesis_event_scenario,
+    cross_border_cell_keys,
+    event_based_cell_keys,
     scenario_for,
 )
 from src.economy.shocks import ShockType, load_scenario
@@ -189,3 +191,36 @@ def test_baseline_cell_keys_excludes_every_cross_border_and_event_spec():
         spec = specs_by_key[key]
         assert not spec.cross_border
         assert spec.event_shock is None
+
+
+def test_cross_border_cell_keys_includes_only_cross_border_specs():
+    keys = cross_border_cell_keys()
+    specs_by_key = {spec.key: spec for spec in build_hypothesis_cell_specs()}
+
+    assert len(keys) == len(CROSS_BORDER_HYPOTHESES) == 5
+    assert {key.removesuffix("_cb") for key in keys} == set(CROSS_BORDER_HYPOTHESES)
+    for key in keys:
+        spec = specs_by_key[key]
+        assert spec.cross_border
+        assert spec.event_shock is None
+
+
+def test_event_based_cell_keys_includes_only_event_specs():
+    keys = event_based_cell_keys()
+    specs_by_key = {spec.key: spec for spec in build_hypothesis_cell_specs()}
+
+    assert len(keys) == len(EVENT_BASED_HYPOTHESES) * 2 == 8
+    for key in keys:
+        spec = specs_by_key[key]
+        assert not spec.cross_border
+        assert spec.event_shock is not None
+        assert spec.hypothesis in EVENT_BASED_HYPOTHESES
+
+
+def test_baseline_cross_border_and_event_cell_keys_partition_all_24_specs():
+    all_keys = {spec.key for spec in build_hypothesis_cell_specs()}
+    partitioned = set(baseline_cell_keys()) | set(cross_border_cell_keys()) | set(event_based_cell_keys())
+
+    assert len(all_keys) == 24
+    assert partitioned == all_keys
+    assert len(baseline_cell_keys()) + len(cross_border_cell_keys()) + len(event_based_cell_keys()) == 24

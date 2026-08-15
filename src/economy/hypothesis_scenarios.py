@@ -128,6 +128,24 @@ def baseline_cell_keys() -> list[str]:
     return [spec.key for spec in build_hypothesis_cell_specs() if not spec.cross_border and spec.event_shock is None]
 
 
+def cross_border_cell_keys() -> list[str]:
+    """Every cross-border cell key (H1, H2, H6, H7, H8's cross-border
+    variants -- see CROSS_BORDER_HYPOTHESES) -- for a
+    run_hypothesis_matrix(cell_keys=...) call that runs only New info.pdf's
+    "Section 2: Cross Border transactions" cells, skipping the baseline and
+    event-based variants."""
+    return [spec.key for spec in build_hypothesis_cell_specs() if spec.cross_border]
+
+
+def event_based_cell_keys() -> list[str]:
+    """Every event-based cell key (H1, H2, H4, H9's depeg_event/
+    bank_failure variants -- see EVENT_BASED_HYPOTHESES) -- for a
+    run_hypothesis_matrix(cell_keys=...) call that runs only New info.pdf's
+    "Section 3: Event based analysis" cells, skipping the baseline and
+    cross-border variants."""
+    return [spec.key for spec in build_hypothesis_cell_specs() if spec.event_shock is not None]
+
+
 # 340, not 200: master_simulation.yaml's last shock is at day 320, and its
 # 190/210 pair (capital_controls/crisis_warning+depeg_event) sits only 20
 # days apart -- no day in that neighborhood is >=15 days clear of both
