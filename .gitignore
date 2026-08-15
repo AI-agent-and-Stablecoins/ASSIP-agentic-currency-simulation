@@ -222,3 +222,11 @@ __marimo__/
 
 # Dashboard control-plane state (PIDs, run status) -- machine-local, never checked in
 dashboard/state/
+
+# run_matrix/run_hypothesis_matrix checkpoint pickles -- machine-local resume
+# state (live Environment/random.Random objects), never checked in
+checkpoints/*.pkl
+
+# Generated hypothesis-report tables (CSVs) -- reproducible from the database,
+# not source
+reports/
