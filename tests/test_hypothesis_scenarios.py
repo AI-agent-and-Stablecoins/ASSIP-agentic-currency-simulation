@@ -5,8 +5,10 @@ from src.economy.hypothesis_scenarios import (
     EVENT_BASED_HYPOTHESES,
     HYPOTHESIS_CURRENCIES,
     build_hypothesis_cell_specs,
+    build_hypothesis_event_scenario,
+    scenario_for,
 )
-from src.economy.shocks import ShockType
+from src.economy.shocks import ShockType, load_scenario
 
 
 def test_all_11_hypotheses_have_currency_definitions():
@@ -102,3 +104,70 @@ def test_every_event_shock_is_a_real_shock_type():
     for spec in specs:
         if spec.event_shock is not None:
             assert spec.event_shock in real_shock_values
+
+
+def test_every_cell_has_a_unique_key():
+    specs = build_hypothesis_cell_specs()
+    assert len({spec.key for spec in specs}) == len(specs) == 24
+
+
+def test_h1_baseline_key_is_h1():
+    specs = build_hypothesis_cell_specs()
+    baseline = [s for s in specs if s.hypothesis == "H1" and not s.cross_border and s.event_shock is None]
+    assert len(baseline) == 1
+    assert baseline[0].key == "H1"
+
+
+def test_h1_cross_border_key_is_h1_cb():
+    specs = build_hypothesis_cell_specs()
+    cross_border = [s for s in specs if s.hypothesis == "H1" and s.cross_border]
+    assert len(cross_border) == 1
+    assert cross_border[0].key == "H1_cb"
+
+
+def test_h1_event_keys_are_h1_depeg_event_and_h1_bank_failure():
+    specs = build_hypothesis_cell_specs()
+    event_specs = [s for s in specs if s.hypothesis == "H1" and s.event_shock is not None]
+    assert len(event_specs) == 2
+    keys = {s.key for s in event_specs}
+    assert keys == {
+        f"H1_{ShockType.DEPEG_EVENT.value}",
+        f"H1_{ShockType.BANK_FAILURE.value}",
+    }
+    assert keys == {"H1_depeg_event", "H1_bank_failure"}
+
+
+def test_build_hypothesis_event_scenario_appends_one_event_shock_and_keeps_macro_shocks():
+    base_scenario = load_scenario("master_simulation")
+    specs = build_hypothesis_cell_specs()
+    event_spec = next(s for s in specs if s.hypothesis == "H1" and s.event_shock is not None)
+
+    result = build_hypothesis_event_scenario(event_spec, base_scenario)
+
+    currency_shocks = [s for s in result.shocks if s.target_currency is not None]
+    assert len(currency_shocks) == 1
+    assert currency_shocks[0].target_currency == event_spec.event_target_currency
+    assert currency_shocks[0].type.value == event_spec.event_shock
+
+    base_macro_shocks = [s for s in base_scenario.shocks if s.target_currency is None]
+    result_macro_shocks = [s for s in result.shocks if s.target_currency is None]
+    assert result_macro_shocks == base_macro_shocks
+
+
+def test_scenario_for_returns_base_scenario_unmodified_for_baseline_spec():
+    base_scenario = load_scenario("master_simulation")
+    specs = build_hypothesis_cell_specs()
+    baseline_spec = next(s for s in specs if s.hypothesis == "H1" and not s.cross_border and s.event_shock is None)
+
+    assert scenario_for(baseline_spec, base_scenario) is base_scenario
+
+
+def test_scenario_for_returns_event_scenario_for_event_spec():
+    base_scenario = load_scenario("master_simulation")
+    specs = build_hypothesis_cell_specs()
+    event_spec = next(s for s in specs if s.hypothesis == "H1" and s.event_shock is not None)
+
+    result = scenario_for(event_spec, base_scenario)
+
+    assert result == build_hypothesis_event_scenario(event_spec, base_scenario)
+    assert result is not base_scenario

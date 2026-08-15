@@ -22,7 +22,7 @@ cohort rows with no error anywhere.
 
 from dataclasses import dataclass
 
-from src.economy.shocks import ShockType
+from src.economy.shocks import ScenarioConfig, ShockEvent, ShockType
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,15 @@ class HypothesisCellSpec:
     cross_border: bool = False
     event_shock: str | None = None
     event_target_currency: str | None = None
+
+    @property
+    def key(self) -> str:
+        parts = [self.hypothesis]
+        if self.cross_border:
+            parts.append("cb")
+        if self.event_shock is not None:
+            parts.append(self.event_shock)
+        return "_".join(parts)
 
 
 HYPOTHESIS_CURRENCIES: dict[str, tuple[str, ...]] = {
@@ -109,3 +118,42 @@ def build_hypothesis_cell_specs() -> list[HypothesisCellSpec]:
             )
 
     return specs
+
+
+# 340, not 200: master_simulation.yaml's last shock is at day 320, and its
+# 190/210 pair (capital_controls/crisis_warning+depeg_event) sits only 20
+# days apart -- no day in that neighborhood is >=15 days clear of both
+# neighbors, the non-confounding-spacing convention src/economy/
+# sandbox_scenarios.py's own shocks already follow. Day 340 is >=15 days
+# clear of every existing shock (20 days past day 320, the last one) and
+# still leaves 25 days before day 365 for its effect to play out.
+_EVENT_DAY = 340
+_EVENT_MAGNITUDE = {
+    ShockType.DEPEG_EVENT.value: 0.15,
+    ShockType.BANK_FAILURE.value: 0.25,
+}
+
+
+def build_hypothesis_event_scenario(spec: HypothesisCellSpec, base_scenario: ScenarioConfig) -> ScenarioConfig:
+    macro_shocks = [s for s in base_scenario.shocks if s.target_currency is None]
+
+    event_shock = ShockEvent(
+        day=_EVENT_DAY,
+        type=ShockType(spec.event_shock),
+        magnitude=_EVENT_MAGNITUDE[spec.event_shock],
+        target_currency=spec.event_target_currency,
+    )
+
+    return base_scenario.model_copy(
+        update={
+            "name": f"{spec.key}_event",
+            "shocks": [*macro_shocks, event_shock],
+        },
+        deep=True,
+    )
+
+
+def scenario_for(spec: HypothesisCellSpec, base_scenario: ScenarioConfig) -> ScenarioConfig:
+    if spec.event_shock is None:
+        return base_scenario
+    return build_hypothesis_event_scenario(spec, base_scenario)
