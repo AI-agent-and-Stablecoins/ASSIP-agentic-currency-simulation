@@ -146,14 +146,17 @@ def event_based_cell_keys() -> list[str]:
     return [spec.key for spec in build_hypothesis_cell_specs() if spec.event_shock is not None]
 
 
-# 340, not 200: master_simulation.yaml's last shock is at day 320, and its
-# 190/210 pair (capital_controls/crisis_warning+depeg_event) sits only 20
-# days apart -- no day in that neighborhood is >=15 days clear of both
-# neighbors, the non-confounding-spacing convention src/economy/
-# sandbox_scenarios.py's own shocks already follow. Day 340 is >=15 days
-# clear of every existing shock (20 days past day 320, the last one) and
-# still leaves 25 days before day 365 for its effect to play out.
-_EVENT_DAY = 340
+# 285, not 200 or 340: master_simulation.yaml's shock days are 10-320 in
+# steps mostly 20 days apart (10,30,50,...,210,230,235,260,270,300,320), so
+# most of that range has no day >=15 days clear of both neighbors, the
+# non-confounding-spacing convention src/economy/sandbox_scenarios.py's own
+# shocks already follow -- e.g. day 200 (rejected earlier) is only 10 days
+# from both 190 and 210. The one gap wide enough is 270-300 (30 days wide):
+# day 285 sits exactly 15 days from each side, the EARLIEST day satisfying
+# the convention, and leaves 80 days (285-365) to observe the agents'
+# reaction -- much more runway than a later day (e.g. 340, only 25 days'
+# runway) while still not confounding with any existing shock.
+_EVENT_DAY = 285
 _EVENT_MAGNITUDE = {
     ShockType.DEPEG_EVENT.value: 0.15,
     ShockType.BANK_FAILURE.value: 0.25,
