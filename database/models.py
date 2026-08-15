@@ -310,3 +310,24 @@ class AgentMemoryLogRecord(Base):
     agent_id: Mapped[str] = mapped_column(String)
     memory_type: Mapped[str] = mapped_column(String)
     memory_text: Mapped[str] = mapped_column(String)
+
+
+class CohortHoldingsRecord(Base):
+    __tablename__ = "cohort_holdings"
+
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("simulation_runs.run_id"), primary_key=True)
+    risk_aversion_cohort: Mapped[float] = mapped_column(Float, primary_key=True)
+    currency_symbol: Mapped[str] = mapped_column(String, primary_key=True)
+    pct_of_wealth: Mapped[float] = mapped_column(Float)
+
+
+class IndifferencePointRecord(Base):
+    __tablename__ = "indifference_points"
+
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("simulation_runs.run_id"), primary_key=True)
+    hypothesis: Mapped[str] = mapped_column(String, primary_key=True)
+    fixed_currency: Mapped[str] = mapped_column(String)
+    varied_currency: Mapped[str] = mapped_column(String, primary_key=True)
+    varied_field: Mapped[str] = mapped_column(String)
+    risk_aversion_cohort: Mapped[float] = mapped_column(Float, primary_key=True)
+    compensation: Mapped[float] = mapped_column(Float)

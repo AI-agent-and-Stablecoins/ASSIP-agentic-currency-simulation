@@ -14,7 +14,9 @@ from database.models import (
     AgentMemoryLogRecord,
     AgentRecord,
     AgentStateRecord,
+    CohortHoldingsRecord,
     HallucinationRecord,
+    IndifferencePointRecord,
     InterventionLogRecord,
     LLMDecisionRecord,
     MarketSnapshotRecord,
@@ -146,6 +148,23 @@ class AgentMemoryLogEntry(BaseModel):
     agent_id: str
     memory_type: str
     memory_text: str
+
+
+class CohortHoldingsLogEntry(BaseModel):
+    run_id: str
+    risk_aversion_cohort: float
+    currency_symbol: str
+    pct_of_wealth: float
+
+
+class IndifferencePointLogEntry(BaseModel):
+    run_id: str
+    hypothesis: str
+    fixed_currency: str
+    varied_currency: str
+    varied_field: str
+    risk_aversion_cohort: float
+    compensation: float
 
 
 class AgentMemoryLogRepository:
@@ -347,6 +366,22 @@ class InterventionLogRepository:
 
     def record(self, entry: InterventionLogEntry) -> None:
         self.session.add(InterventionLogRecord(**entry.model_dump()))
+
+
+class CohortHoldingsRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(self, entry: CohortHoldingsLogEntry) -> None:
+        self.session.add(CohortHoldingsRecord(**entry.model_dump()))
+
+
+class IndifferencePointRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def record(self, entry: IndifferencePointLogEntry) -> None:
+        self.session.add(IndifferencePointRecord(**entry.model_dump()))
 
 
 def persist_timestep(
