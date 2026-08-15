@@ -88,13 +88,17 @@ def _agent_indifference_point(
     comparison: EquivalenceComparison,
     fixed_traits: dict[str, float],
     varied_other_traits: dict[str, float],
-    model_id: str,
     client: httpx.Client,
 ) -> float:
     low, high = comparison.bounds
     higher_is_better = _HIGHER_IS_BETTER[comparison.varied_field]
     rounds = _SEARCH_ROUNDS_BY_FIELD[comparison.varied_field]
     agent_context = agent.build_llm_context()
+    if agent_context.assigned_model is None:
+        raise ValueError(
+            "cohort_indifference_points requires every CARA-eligible agent to have an "
+            f"assigned_model, but agent {agent.agent_id!r} has assigned_model=None"
+        )
 
     for _ in range(rounds):
         midpoint = (low + high) / 2
@@ -107,7 +111,7 @@ def _agent_indifference_point(
             varied_value=midpoint,
             varied_other_traits=varied_other_traits,
         )
-        decision = call_model_for_switch(prompt, model_id, client)
+        decision = call_model_for_switch(prompt, agent_context.assigned_model, client)
         # For a higher-is-better field, "would switch" at the midpoint means
         # the agent's threshold is at or below the midpoint, so narrow the
         # upper bound. For a lower-is-better field the relationship inverts:
@@ -123,7 +127,7 @@ def _agent_indifference_point(
 
 
 def cohort_indifference_points(
-    env: Environment, comparison: EquivalenceComparison, model_id: str, client: httpx.Client
+    env: Environment, comparison: EquivalenceComparison, client: httpx.Client
 ) -> dict[float, float]:
     if comparison.fixed_currency not in env.currencies or comparison.varied_currency not in env.currencies:
         raise ValueError(
@@ -153,7 +157,7 @@ def cohort_indifference_points(
             continue
         cohort = min(RISK_AVERSION_COHORTS, key=lambda c: abs(c - agent.risk_aversion))
         indifference_point = _agent_indifference_point(
-            agent, comparison, fixed_traits, varied_other_traits, model_id, client
+            agent, comparison, fixed_traits, varied_other_traits, client
         )
         compensation = indifference_point - fixed_value
         cohort_sums[cohort] += compensation

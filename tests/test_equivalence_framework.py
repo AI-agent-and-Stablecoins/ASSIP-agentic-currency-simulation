@@ -70,7 +70,7 @@ def test_binary_search_converges_to_a_known_threshold_for_a_higher_is_better_fie
     threshold = 0.62
     client = mock_switch_threshold_client("liquidity_score", threshold, higher_is_better=True)
 
-    result = cohort_indifference_points(env, comparison, "vendor/model", client)
+    result = cohort_indifference_points(env, comparison, client)
 
     fixed_value = load_currency_universe()[comparison.fixed_currency].liquidity_score
     expected = threshold - fixed_value
@@ -88,7 +88,7 @@ def test_binary_search_converges_to_a_known_threshold_for_a_lower_is_better_fiel
     threshold = 2.5
     client = mock_switch_threshold_client("gas_fee", threshold, higher_is_better=False)
 
-    result = cohort_indifference_points(env, comparison, "vendor/model", client)
+    result = cohort_indifference_points(env, comparison, client)
 
     fixed_value = env.chains["solana"].gas_fee  # H10's fixed reference: TDUSD on Solana
     expected = threshold - fixed_value
@@ -108,13 +108,13 @@ def test_cohort_mean_is_the_average_of_individual_agent_indifference_points():
         agent.agent_id: fixed_value + 0.1 + 0.2 * (index % 2) for index, agent in enumerate(cara_agents)
     }
 
-    def fake_indifference_point(agent, comparison, fixed_traits, varied_other_traits, model_id, client):
+    def fake_indifference_point(agent, comparison, fixed_traits, varied_other_traits, client):
         return fake_points[agent.agent_id]
 
     with patch(
         "src.economy.equivalence_framework._agent_indifference_point", side_effect=fake_indifference_point
     ):
-        result = cohort_indifference_points(env, comparison, "vendor/model", None)
+        result = cohort_indifference_points(env, comparison, None)
 
     for cohort in result:
         members = [
@@ -131,4 +131,15 @@ def test_cohort_indifference_points_rejects_an_env_missing_a_comparisons_currenc
     mismatched = EquivalenceComparison("H4", "USDT", "DAI", "peg_error", (0.0, 0.05))
 
     with pytest.raises(ValueError):
-        cohort_indifference_points(env, mismatched, "vendor/model", None)
+        cohort_indifference_points(env, mismatched, None)
+
+
+def test_cohort_indifference_points_rejects_an_agent_with_no_assigned_model():
+    env = _hypothesis_env("H3")
+    comparison = EQUIVALENCE_COMPARISONS["H3"][0]
+    for agent in env.agents.values():
+        if agent.profile_name in CARA_ELIGIBLE_ROLES:
+            agent.assigned_model = None
+
+    with pytest.raises(ValueError):
+        cohort_indifference_points(env, comparison, None)
