@@ -32,23 +32,42 @@ that endpoint too, alongside `/chat/completions` -- see
 
 Checkpointing/resume follows `run_matrix`'s exact contract (see that module's
 docstring's "Memory, progress, and per-cell error recovery" /
-`checkpoint_dir` sections), with one deliberate difference: the checkpoint is
-NOT deleted the moment the day loop finishes -- it stays alive until the
-post-run analysis phase (holdings/indifference-point search) also commits
-successfully. The analysis phase has no checkpointing of its own (per the
-design spec Sec 0's third binding decision, no second checkpointing concept
-was added for it); instead, a crash during it leaves the day loop's own
-checkpoint in place (at `next_day == num_days`), so the next call with the
-same `matrix_run_id`/database/`checkpoint_dir` resumes into an already-
-exhausted day range (a no-op) and simply retries the analysis phase, rather
-than silently skipping this cell/seed/utility_type forever -- the
-`SimulationRunRecord`-exists-with-no-checkpoint skip-check only ever fires
-once BOTH the day loop and the analysis phase have durably committed. A
-cell/seed/utility_type interrupted mid-day-loop resumes from its last
-persisted day exactly as `run_matrix` does.
+`checkpoint_dir` sections), with two deliberate differences:
+
+1. A checkpoint (`next_day=0`, zeroed counters) is written immediately after
+   the `SimulationRunRecord` commit, before day 0 even starts -- not only per
+   day thereafter. Without this, a crash during day 0's own `run_timestep`/
+   `persist_full_timestep` (this cell's very first network I/O, so the single
+   likeliest moment for a transient failure across the 72 cell/utility_type
+   combinations this runner drives) would leave a committed
+   `SimulationRunRecord` with NO checkpoint at all -- exactly what the
+   skip-check above reads as "fully done" -- silently and permanently
+   skipping that cell/seed/utility_type on every later call.
+2. The checkpoint is NOT deleted the moment the day loop finishes -- it stays
+   alive until the post-run analysis phase (holdings/indifference-point
+   search) also commits successfully. The analysis phase has no
+   checkpointing of its own (per the design spec Sec 0's third binding
+   decision, no second checkpointing concept was added for it); instead, a
+   crash during it leaves the day loop's own checkpoint in place (at
+   `next_day == num_days`), so the next call resumes into an
+   already-exhausted day range (a no-op) and simply retries the analysis
+   phase.
+
+Together these two mean the `SimulationRunRecord`-exists-with-no-checkpoint
+skip-check only ever fires once registration, every simulated day, AND the
+analysis phase have all durably committed -- a crash at any other point
+resumes from a checkpoint instead of being silently skipped. (One narrower
+gap remains, shared with `run_matrix`'s identical pattern and not introduced
+here: a crash strictly between one day's `persist_full_timestep` commit and
+that same day's `save_checkpoint` call leaves a checkpoint pointing at an
+already-persisted day, so resuming re-attempts it and hits a composite-key
+`IntegrityError` on `timestep_logs`/`agent_states` -- recovering that
+specific cell/seed/utility_type currently requires deleting its rows by hand
+before retrying.)
 """
 
 import random
+import warnings
 from pathlib import Path
 from typing import Callable
 
@@ -74,12 +93,12 @@ from src.economy.equivalence_framework import EQUIVALENCE_COMPARISONS, cohort_in
 from src.economy.hypothesis_scenarios import (
     HYPOTHESIS_CURRENCIES,
     HypothesisCellSpec,
+    _EVENT_DAY,
     build_hypothesis_cell_specs,
     scenario_for,
 )
 from src.economy.shocks import ScenarioConfig, load_scenario
 from src.economy.wallet_seeding import seed_restricted_wallets
-from src.llm.agent_reasoning import PROMPT_VERSIONS, hash_rendered_prompt
 from src.simulation.checkpointing import (
     CellSeedCheckpoint,
     delete_checkpoint,
@@ -92,6 +111,7 @@ from src.simulation.matrix_runner import (
     CrossZoneMarketplace,
     _CURRENCY_UNIVERSE_PATHS,
     _SHARED_CONFIG_PATHS,
+    _prompt_version_hash,
     _resolve_available_models,
 )
 from src.simulation.provenance import compute_config_hash, compute_git_commit_hash, model_roster_summary_for
@@ -101,10 +121,11 @@ from src.simulation.timestep import run_timestep
 class HypothesisCellResult(BaseModel):
     """One hypothesis cell/seed/utility_type combination's outcome -- mirrors
     `matrix_runner.MatrixCellResult`'s shape, plus the extra `hypothesis`/
-    `utility_type` axes this runner has and neither of `holdings_by_cohort`'s
-    or `cohort_indifference_points`' post-run analysis result, whichever this
-    cell produced (only one of `cohort_holdings`/`cohort_indifference` is ever
-    populated, per `spec.hypothesis == "H1"` or not).
+    `utility_type` axes this runner has, plus whichever of
+    `holdings_by_cohort`'s or `cohort_indifference_points`' post-run analysis
+    result this cell produced (only one of `cohort_holdings`/
+    `cohort_indifference` is ever populated, per `spec.hypothesis == "H1"` or
+    not).
 
     `cohort_indifference` is keyed by `EquivalenceComparison.varied_currency`
     (not `hypothesis`, since H2 is the one hypothesis with two comparisons
@@ -124,10 +145,6 @@ class HypothesisCellResult(BaseModel):
     total_llm_decisions: int = 0
     cohort_holdings: dict[float, dict[str, float]] | None = None
     cohort_indifference: dict[str, dict[float, float]] | None = None
-
-
-def _prompt_version_hash() -> str:
-    return hash_rendered_prompt(",".join(sorted(PROMPT_VERSIONS.values())))
 
 
 def _build_fresh_cell_environment(
@@ -231,7 +248,32 @@ def run_hypothesis_matrix(
     else:
         specs_to_run = all_specs
 
-    resolved_utility_types = list(utility_types) if utility_types is not None else sorted(HYPOTHESIS_UTILITY_TYPES)
+    # An event-based spec's shock is scheduled at day _EVENT_DAY -- a
+    # num_days short of that fires it never, producing an "event" cell
+    # indistinguishable from (in fact strictly milder than) its own baseline,
+    # silently and misleadingly. A warning, not a ValueError: short num_days
+    # is legitimate for fast tests exercising an event-based hypothesis's
+    # OTHER wiring (chain pins, currency restriction, persistence) without
+    # caring whether the event itself fires -- this only needs to catch a
+    # real research run's config mistake, not block every short test run.
+    event_specs_too_short = [
+        spec for spec in specs_to_run if spec.event_shock is not None and num_days <= _EVENT_DAY
+    ]
+    if event_specs_too_short:
+        warnings.warn(
+            f"num_days={num_days} is too short for {len(event_specs_too_short)} selected event-based cell(s) "
+            f"(e.g. {event_specs_too_short[0].key!r}) whose shock fires at day {_EVENT_DAY} -- their event will "
+            "never trigger, so that cell's results will be indistinguishable from its own baseline.",
+            stacklevel=2,
+        )
+
+    if utility_types is not None:
+        unknown = set(utility_types) - set(HYPOTHESIS_UTILITY_TYPES)
+        if unknown:
+            raise ValueError(f"utility_types contains unknown utility type id(s): {sorted(unknown)}")
+        resolved_utility_types = list(utility_types)
+    else:
+        resolved_utility_types = sorted(HYPOTHESIS_UTILITY_TYPES)
 
     results: list[HypothesisCellResult] = []
     failures: list[tuple[str, int, str, Exception]] = []
@@ -286,6 +328,31 @@ def run_hypothesis_matrix(
                     num_days_completed = 0
                     total_transactions = 0
                     total_llm_decisions = 0
+
+                    if checkpoint_dir is not None:
+                        # Written immediately, before day 0 even starts --
+                        # otherwise a crash during day 0's run_timestep/
+                        # persist_full_timestep (this cell's very first
+                        # network I/O, the single likeliest moment for a
+                        # transient failure across 72 cell/utility_type
+                        # combinations) leaves the SimulationRunRecord above
+                        # committed with NO checkpoint at all, which the
+                        # skip-check above reads as "fully done" -- silently
+                        # and permanently skipping this cell/seed/utility_type
+                        # on every later call.
+                        save_checkpoint(
+                            checkpoint_dir,
+                            run_id,
+                            CellSeedCheckpoint(
+                                env=env,
+                                rng=rng,
+                                next_day=0,
+                                daily_results=[],
+                                num_days_completed=0,
+                                total_transactions=0,
+                                total_llm_decisions=0,
+                            ),
+                        )
 
                 try:
                     for day in range(start_day, num_days):

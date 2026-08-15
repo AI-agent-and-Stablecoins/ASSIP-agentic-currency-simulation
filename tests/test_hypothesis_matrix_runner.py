@@ -129,6 +129,23 @@ def test_h1_cell_persists_cohort_holdings_with_sane_pct_values():
     for total in by_run_cohort.values():
         assert total == pytest.approx(1.0, abs=1e-4)
 
+    # Persisted rows must agree with the in-memory HypothesisCellResult they
+    # came from -- a transposition bug between the two (e.g. swapping which
+    # dict is cohort-keyed vs. currency-keyed) would pass every check above
+    # but fail this one.
+    for result in results:
+        persisted_for_run = {
+            (row.risk_aversion_cohort, row.currency_symbol): row.pct_of_wealth
+            for row in rows
+            if row.run_id == result.run_id
+        }
+        in_memory = {
+            (cohort, symbol): pct
+            for cohort, per_symbol in result.cohort_holdings.items()
+            for symbol, pct in per_symbol.items()
+        }
+        assert persisted_for_run == in_memory
+
 
 def test_h3_cell_persists_indifference_points_tagged_correctly():
     session = _session()
