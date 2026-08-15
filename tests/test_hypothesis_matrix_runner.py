@@ -16,8 +16,14 @@ from src.economy.hypothesis_scenarios import (
     build_hypothesis_cell_specs,
 )
 from src.economy.shocks import load_scenario
+from src.economy.synthetic_hypothesis_scenarios import build_synthetic_hypothesis_cell_specs
 from src.llm.llm_router import OPENROUTER_BASE_URL
-from src.simulation.hypothesis_matrix_runner import _build_fresh_cell_environment, run_hypothesis_matrix
+from src.reporting.hypothesis_tables import build_equilibrium_holdings_table
+from src.simulation.hypothesis_matrix_runner import (
+    _build_fresh_cell_environment,
+    _synthetic_equivalence_comparison_for,
+    run_hypothesis_matrix,
+)
 from src.simulation.matrix_runner import MASTER_SCENARIO_NAME
 
 MODEL_ID = "vendor/model"
@@ -390,6 +396,112 @@ def test_cell_keys_restricts_to_baseline_only_excluding_cross_border_and_event()
     assert failures == []
     assert len(results) == 1  # H1's baseline only -- not H1_cb/H1_depeg_event/H1_bank_failure
     assert results[0].cell_key == "H1"
+
+
+def test_synthetic_h3_cell_persists_holdings_and_indifference_points():
+    """End-to-end synthetic-track test: track="synthetic" for H3 must persist
+    CohortHoldingsRecord rows (H3 itself, not just H1 -- per design spec §6,
+    "every hypothesis, not just H1") AND IndifferencePointRecord rows from
+    the discrete switch search, with run_ids containing "synthetic"."""
+    session = _session()
+
+    synthetic_specs = {spec.hypothesis: spec for spec in build_synthetic_hypothesis_cell_specs()}
+    h3_spec = synthetic_specs["H3"]
+    comparison = _synthetic_equivalence_comparison_for(h3_spec.hypothesis, h3_spec.currencies, h3_spec.chain_pins)
+
+    # Every H3 synthetic coin has gas_fee held neutral (untested dimension),
+    # so every symbol is pinned to the same synthetic chain -- any symbol's
+    # own pinned chain is a valid decision_chain for the mocked negotiation.
+    decision_currency = next(iter(h3_spec.currencies))
+    decision_chain = h3_spec.chain_pins[decision_currency]
+
+    client = _mock_client(
+        decision_currency=decision_currency,
+        decision_chain=decision_chain,
+        switch_field=comparison.varied_field,
+        switch_threshold=(comparison.levels[0] + comparison.levels[-1]) / 2,
+        switch_higher_is_better=comparison.varied_field == "governance_score",
+    )
+
+    results, failures = run_hypothesis_matrix(
+        model_candidates=[MODEL_ID],
+        seeds=[0],
+        num_days=2,
+        openrouter_client=client,
+        session=session,
+        matrix_run_id="test-synthetic-h3",
+        hypotheses=["H3"],
+        utility_types=["crra"],
+        track="synthetic",
+    )
+
+    assert failures == []
+    assert len(results) == 1
+    result = results[0]
+    assert result.hypothesis == "H3"
+    assert result.cell_key == "H3_synthetic"
+    assert "synthetic" in result.run_id
+    assert result.cohort_holdings is not None
+    assert result.cohort_indifference is not None
+    assert set(result.cohort_indifference.keys()) == {comparison.varied_currency}
+
+    holdings_rows = session.query(CohortHoldingsRecord).all()
+    assert len(holdings_rows) > 0
+    for row in holdings_rows:
+        assert "synthetic" in row.run_id
+        assert row.currency_symbol in h3_spec.currencies
+
+    indifference_rows = session.query(IndifferencePointRecord).all()
+    assert len(indifference_rows) > 0
+    for row in indifference_rows:
+        assert "synthetic" in row.run_id
+        assert row.hypothesis == "H3"
+        assert row.fixed_currency == comparison.fixed_currency
+        assert row.varied_currency == comparison.varied_currency
+        assert row.varied_field == comparison.varied_field
+
+
+def test_real_track_run_id_and_reporting_layer_agree():
+    """Regression test for a bug the Task 6 whole-plan review caught: the
+    run_id scheme once applied a `{track}` segment unconditionally
+    (including for track="real"), while
+    src.reporting.hypothesis_tables._run_id was never updated to match --
+    silently returning empty tables for every real-track run, and risking
+    duplicate re-runs on resume against an already-populated database.
+    track="real" must keep the exact pre-existing run_id shape."""
+    session = _session()
+    client = _mock_client("USDC", "ethereum")
+
+    results, failures = run_hypothesis_matrix(
+        model_candidates=[MODEL_ID],
+        seeds=[0],
+        num_days=3,
+        openrouter_client=client,
+        session=session,
+        matrix_run_id="run-id-agreement-test",
+        hypotheses=["H1"],
+        cell_keys=["H1"],
+        utility_types=["crra"],
+    )
+
+    assert failures == []
+    assert results[0].run_id == "run-id-agreement-test-H1-crra-seed0"  # no "-real-" segment
+
+    table = build_equilibrium_holdings_table(session, "run-id-agreement-test", cell_key="H1", seed=0)
+    assert not (table == "").all().all()  # reporting must find the rows the runner just persisted
+
+
+def test_synthetic_track_rejects_bad_track_value():
+    with pytest.raises(ValueError):
+        run_hypothesis_matrix(
+            model_candidates=[MODEL_ID],
+            seeds=[0],
+            num_days=1,
+            openrouter_client=_mock_client("USDC", "ethereum"),
+            session=_session(),
+            matrix_run_id="bad-track-test",
+            track="not-a-real-track",
+        )
 
 
 def test_cell_keys_rejects_unknown_key():
