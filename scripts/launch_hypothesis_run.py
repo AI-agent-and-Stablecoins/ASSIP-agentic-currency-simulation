@@ -69,10 +69,11 @@ CELL_KEYS = None  # None -> every selected cell (baseline + cross-border + event
 
 # Event-based-only (New info.pdf's "Section 3: Event based analysis" --
 # H1/H2/H4/H9's depeg_event/bank_failure variants, skips baseline and
-# cross-border): note num_days must exceed src.economy.hypothesis_scenarios'
-# _EVENT_DAY (340) for the event to actually fire -- a short num_days here
-# silently produces a "no-op event" cell (run_hypothesis_matrix warns about
-# this at launch time if it detects it).
+# cross-border). NUM_DAYS=365 above already exceeds
+# src.economy.hypothesis_scenarios' _EVENT_DAY (340), so the event fires
+# with room to spare -- if you ever shorten NUM_DAYS below 340 for a quick
+# check, run_hypothesis_matrix warns at launch time that the event cell
+# would be a silent no-op.
 # CELL_KEYS = event_based_cell_keys()
 
 # Smoke-test scope (uncomment this block and comment out the real-study
