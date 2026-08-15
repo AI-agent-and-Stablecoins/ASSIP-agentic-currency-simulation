@@ -165,6 +165,7 @@ class IndifferencePointLogEntry(BaseModel):
     varied_field: str
     risk_aversion_cohort: float
     compensation: float
+    censored_fraction: float = 0.0
 
 
 class AgentMemoryLogRepository:

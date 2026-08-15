@@ -669,8 +669,10 @@ def run_hypothesis_matrix(
                                 spec.hypothesis, spec.currencies, spec.chain_pins
                             )
                             per_cohort = cohort_discrete_switch_points(env, comparison, openrouter_client)
-                            cohort_indifference[comparison.varied_currency] = per_cohort
-                            for cohort, compensation in per_cohort.items():
+                            cohort_indifference[comparison.varied_currency] = {
+                                cohort: result.compensation for cohort, result in per_cohort.items()
+                            }
+                            for cohort, result in per_cohort.items():
                                 indifference_repo.record(
                                     IndifferencePointLogEntry(
                                         run_id=run_id,
@@ -679,7 +681,8 @@ def run_hypothesis_matrix(
                                         varied_currency=comparison.varied_currency,
                                         varied_field=comparison.varied_field,
                                         risk_aversion_cohort=cohort,
-                                        compensation=compensation,
+                                        compensation=result.compensation,
+                                        censored_fraction=result.censored_fraction,
                                     )
                                 )
                     elif spec.hypothesis == "H1":

@@ -85,9 +85,10 @@ def test_agent_discrete_switch_point_picks_correct_level_for_higher_is_better_fi
     fixed_traits = {"governance_score": 1.0, "bid_ask_spread": 0.0005, "peg_error": 0.004}
     varied_other_traits = {"bid_ask_spread": 0.0005, "peg_error": 0.004}
 
-    result = _agent_discrete_switch_point(agent, comparison, fixed_traits, varied_other_traits, client)
+    result, censored = _agent_discrete_switch_point(agent, comparison, fixed_traits, varied_other_traits, client)
 
     assert result == 1.0
+    assert censored is False
 
 
 def test_agent_discrete_switch_point_picks_correct_level_for_lower_is_better_field():
@@ -101,13 +102,14 @@ def test_agent_discrete_switch_point_picks_correct_level_for_lower_is_better_fie
     fixed_traits = {"governance_score": 1.0, "bid_ask_spread": 0.0005, "peg_error": 0.004}
     varied_other_traits = {"governance_score": 1.0, "peg_error": 0.004}
 
-    result = _agent_discrete_switch_point(agent, comparison, fixed_traits, varied_other_traits, client)
+    result, censored = _agent_discrete_switch_point(agent, comparison, fixed_traits, varied_other_traits, client)
 
     # Least-to-most-attractive order for a lower-is-better field is
     # (0.0010, 0.0005, 0.0001); the agent first says will_switch=True at
     # 0.0005 (<= threshold), so that -- not the most extreme level -- is
     # the correct reported threshold.
     assert result == 0.0005
+    assert censored is False
 
 
 def test_agent_discrete_switch_point_reports_most_attractive_level_when_agent_never_switches():
@@ -122,9 +124,10 @@ def test_agent_discrete_switch_point_reports_most_attractive_level_when_agent_ne
     fixed_traits = {"governance_score": 1.0, "bid_ask_spread": 0.0005, "peg_error": 0.004}
     varied_other_traits = {"governance_score": 1.0, "peg_error": 0.004}
 
-    result = _agent_discrete_switch_point(agent, comparison, fixed_traits, varied_other_traits, client)
+    result, censored = _agent_discrete_switch_point(agent, comparison, fixed_traits, varied_other_traits, client)
 
     assert result == 0.0001  # the most attractive (lowest-spread) level actually tested
+    assert censored is True
     assert calls["count"] == len(comparison.levels)
 
 
@@ -164,9 +167,13 @@ def test_cohort_mean_is_the_average_of_individual_agent_discrete_switch_points()
     fake_points = {
         agent.agent_id: fixed_value + 0.0001 + 0.0002 * (index % 2) for index, agent in enumerate(cara_agents)
     }
+    # Every other agent (odd index) is "censored" -- proves censored_fraction
+    # aggregates correctly alongside the compensation mean, not just that it
+    # defaults to 0.0.
+    fake_censored = {agent.agent_id: index % 2 == 1 for index, agent in enumerate(cara_agents)}
 
     def fake_switch_point(agent, comparison, fixed_traits, varied_other_traits, client):
-        return fake_points[agent.agent_id]
+        return fake_points[agent.agent_id], fake_censored[agent.agent_id]
 
     with patch(
         "src.economy.synthetic_switch_search._agent_discrete_switch_point", side_effect=fake_switch_point
@@ -179,8 +186,10 @@ def test_cohort_mean_is_the_average_of_individual_agent_discrete_switch_points()
             for agent in cara_agents
             if min(RISK_AVERSION_COHORTS, key=lambda c: abs(c - agent.risk_aversion)) == cohort
         ]
-        expected = sum(fake_points[agent.agent_id] for agent in members) / len(members) - fixed_value
-        assert result[cohort] == pytest.approx(expected)
+        expected_compensation = sum(fake_points[agent.agent_id] for agent in members) / len(members) - fixed_value
+        expected_censored_fraction = sum(fake_censored[agent.agent_id] for agent in members) / len(members)
+        assert result[cohort].compensation == pytest.approx(expected_compensation)
+        assert result[cohort].censored_fraction == pytest.approx(expected_censored_fraction)
 
 
 def test_cohort_discrete_switch_points_rejects_an_env_missing_a_comparisons_currency():

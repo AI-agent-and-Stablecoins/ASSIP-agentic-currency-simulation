@@ -108,10 +108,16 @@ def build_equilibrium_holdings_table(
     return _pivot(columns)
 
 
-def _format_compensation(varied_field: str, compensation: float) -> str:
-    if varied_field == "gas_fee":
-        return f"{compensation:+.4f}"
-    return f"{compensation * 100:+.2f}%"
+def _format_compensation(varied_field: str, compensation: float, censored_fraction: float = 0.0) -> str:
+    value = f"{compensation:+.4f}" if varied_field == "gas_fee" else f"{compensation * 100:+.2f}%"
+    if censored_fraction <= 0.0:
+        return value
+    if censored_fraction >= 1.0:
+        # No agent in this cohort ever switched at any tested level -- this
+        # number is a reported search boundary, not a genuine indifference
+        # point (see IndifferencePointRecord.censored_fraction's docstring).
+        return f"{value} (censored)"
+    return f"{value} ({censored_fraction * 100:.0f}% censored)"
 
 
 def build_compensation_tables(
@@ -161,7 +167,8 @@ def build_compensation_tables(
                 and row.varied_field == varied_field
             ]
             columns[UTILITY_TYPE_LABELS[utility_type]] = {
-                row.risk_aversion_cohort: _format_compensation(row.varied_field, row.compensation) for row in rows
+                row.risk_aversion_cohort: _format_compensation(row.varied_field, row.compensation, row.censored_fraction)
+                for row in rows
             }
 
         title = (

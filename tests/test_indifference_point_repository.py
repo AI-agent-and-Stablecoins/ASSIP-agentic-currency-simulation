@@ -61,6 +61,29 @@ def test_indifference_point_repository_persists_and_round_trips():
     assert row.varied_field == "peg_stability"
     assert row.risk_aversion_cohort == 0.5
     assert row.compensation == 0.03
+    assert row.censored_fraction == 0.0  # default, unset by this entry
+
+
+def test_indifference_point_repository_persists_censored_fraction():
+    session = _session()
+    _seed_run(session)
+    repo = IndifferencePointRepository(session)
+    repo.record(
+        IndifferencePointLogEntry(
+            run_id="run-h3-seed0",
+            hypothesis="H3",
+            fixed_currency="USDC",
+            varied_currency="EURC",
+            varied_field="peg_stability",
+            risk_aversion_cohort=0.5,
+            compensation=0.03,
+            censored_fraction=0.4,
+        )
+    )
+    session.commit()
+
+    row = session.query(IndifferencePointRecord).one()
+    assert row.censored_fraction == 0.4
 
 
 def test_indifference_point_rejects_duplicate_composite_key():

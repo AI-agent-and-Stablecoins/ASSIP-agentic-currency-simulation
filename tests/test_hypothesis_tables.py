@@ -181,3 +181,40 @@ def test_build_compensation_tables_keys_h2_by_varied_currency():
     assert len(tables) == 2
     assert any("EURC" in title for title in tables)
     assert any("PAXG" in title for title in tables)
+
+
+def test_build_compensation_tables_annotates_censored_results():
+    session = _session()
+    run_id = f"{MATRIX_RUN_ID}-H3_synthetic-crra-seed0"
+    _register_run(session, run_id)
+    session.add(
+        IndifferencePointRecord(
+            run_id=run_id,
+            hypothesis="H3",
+            fixed_currency="SYN_H3_00",
+            varied_currency="SYN_H3_05",
+            varied_field="bid_ask_spread",
+            risk_aversion_cohort=0.0,
+            compensation=0.0004,
+            censored_fraction=1.0,
+        )
+    )
+    session.add(
+        IndifferencePointRecord(
+            run_id=run_id,
+            hypothesis="H3",
+            fixed_currency="SYN_H3_00",
+            varied_currency="SYN_H3_05",
+            varied_field="bid_ask_spread",
+            risk_aversion_cohort=2.0,
+            compensation=0.0002,
+            censored_fraction=0.5,
+        )
+    )
+    session.commit()
+
+    tables = build_compensation_tables(session, MATRIX_RUN_ID, "H3", cell_key="H3_synthetic", seed=0)
+    table = next(iter(tables.values()))
+
+    assert table.loc["Risk Neutral (a=0)", "CRRA"] == "+0.04% (censored)"
+    assert table.loc["Moderate risk averse (a=2)", "CRRA"] == "+0.02% (50% censored)"

@@ -46,6 +46,18 @@ class SyntheticEquivalenceComparison:
     levels: tuple[float, ...]  # ordered by VALUE (low to high), not attractiveness
 
 
+@dataclass(frozen=True)
+class CohortSwitchResult:
+    compensation: float
+    # Fraction (0.0-1.0) of this cohort's agents who never said will_switch
+    # at any tested level -- for them, `compensation` is a reported search
+    # boundary, not a genuine discovered indifference point, since with only
+    # 2-3 tested levels per dimension a "never switched" agent is
+    # indistinguishable in VALUE from one who switched right at that same
+    # boundary. See _agent_discrete_switch_point's docstring.
+    censored_fraction: float
+
+
 def _real_traits(env: Environment, symbol: str) -> dict[str, float]:
     """The current values of a synthetic currency's characteristics -- the
     other (non-varied) traits shown to the agent for context, and the
@@ -76,14 +88,17 @@ def _agent_discrete_switch_point(
     fixed_traits: dict[str, float],
     varied_other_traits: dict[str, float],
     client: httpx.Client,
-) -> float:
+) -> tuple[float, bool]:
     """Same role as equivalence_framework._agent_indifference_point, but asks
     the switch question at each of comparison.levels directly (one call per
     level, not a multi-round binary search), iterating from LEAST to MOST
-    attractive per _HIGHER_IS_BETTER's direction, and returns the first
-    level at which the agent says will_switch=True -- or the most attractive
-    level tested if the agent never switches, honestly reporting that
-    boundary rather than extrapolating past it.
+    attractive per _HIGHER_IS_BETTER's direction, and returns
+    `(level, censored)`: the first level at which the agent says
+    will_switch=True with `censored=False`, or the most attractive level
+    tested with `censored=True` if the agent never switches -- honestly
+    reporting that boundary rather than extrapolating past it, and flagging
+    it as censored so callers can tell it apart from a genuine match at that
+    same boundary value.
     """
     agent_context = agent.build_llm_context()
     if agent_context.assigned_model is None:
@@ -110,16 +125,17 @@ def _agent_discrete_switch_point(
         )
         decision = call_model_for_switch(prompt, agent_context.assigned_model, client)
         if decision.will_switch:
-            return level
+            return level, False
 
     # Never switched at any tested level -- report the most attractive
-    # level actually tested, rather than extrapolating past it.
-    return ordered_levels[-1]
+    # level actually tested, rather than extrapolating past it, flagged as
+    # censored.
+    return ordered_levels[-1], True
 
 
 def cohort_discrete_switch_points(
     env: Environment, comparison: SyntheticEquivalenceComparison, client: httpx.Client
-) -> dict[float, float]:
+) -> dict[float, CohortSwitchResult]:
     if comparison.fixed_currency not in env.currencies or comparison.varied_currency not in env.currencies:
         raise ValueError(
             f"env.currencies {sorted(env.currencies)} does not contain both of "
@@ -141,21 +157,27 @@ def cohort_discrete_switch_points(
     }
 
     cohort_sums: dict[float, float] = {cohort: 0.0 for cohort in RISK_AVERSION_COHORTS}
+    cohort_censored_counts: dict[float, int] = {cohort: 0 for cohort in RISK_AVERSION_COHORTS}
     cohort_counts: dict[float, int] = {cohort: 0 for cohort in RISK_AVERSION_COHORTS}
 
     for agent in env.agents.values():
         if agent.profile_name not in CARA_ELIGIBLE_ROLES:
             continue
         cohort = min(RISK_AVERSION_COHORTS, key=lambda c: abs(c - agent.risk_aversion))
-        switch_point = _agent_discrete_switch_point(
+        switch_point, censored = _agent_discrete_switch_point(
             agent, comparison, fixed_traits, varied_other_traits, client
         )
         compensation = switch_point - fixed_value
         cohort_sums[cohort] += compensation
         cohort_counts[cohort] += 1
+        if censored:
+            cohort_censored_counts[cohort] += 1
 
     return {
-        cohort: cohort_sums[cohort] / count
+        cohort: CohortSwitchResult(
+            compensation=cohort_sums[cohort] / count,
+            censored_fraction=cohort_censored_counts[cohort] / count,
+        )
         for cohort, count in cohort_counts.items()
         if count > 0
     }

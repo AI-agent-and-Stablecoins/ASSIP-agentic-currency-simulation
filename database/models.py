@@ -322,6 +322,15 @@ class CohortHoldingsRecord(Base):
 
 
 class IndifferencePointRecord(Base):
+    """`censored_fraction`: the fraction (0.0-1.0) of this cohort's agents
+    whose individual search never found a level at which they'd switch, so
+    `compensation` for them is a reported search-boundary, not a genuine
+    discovered indifference point -- indistinguishable from a real match at
+    that same boundary without this column. Always 0.0 for the real-coin
+    track's continuous search (not tracked there); meaningful for the
+    synthetic track's discrete search, where censoring is far more likely
+    given only 2-3 tested levels per dimension."""
+
     __tablename__ = "indifference_points"
 
     run_id: Mapped[str] = mapped_column(String, ForeignKey("simulation_runs.run_id"), primary_key=True)
@@ -331,3 +340,4 @@ class IndifferencePointRecord(Base):
     varied_field: Mapped[str] = mapped_column(String)
     risk_aversion_cohort: Mapped[float] = mapped_column(Float, primary_key=True)
     compensation: Mapped[float] = mapped_column(Float)
+    censored_fraction: Mapped[float] = mapped_column(Float, default=0.0)
