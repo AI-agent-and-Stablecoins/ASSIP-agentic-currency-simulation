@@ -61,7 +61,7 @@ CELL_KEYS = None  # None -> every selected cell (baseline + cross-border + event
 
 # Baseline-only (New info.pdf's "Section 1: Baseline model" -- skips every
 # cross-border and event-based variant): uncomment this one line.
-# CELL_KEYS = baseline_cell_keys()
+CELL_KEYS = baseline_cell_keys()
 
 # Cross-border-only (New info.pdf's "Section 2: Cross Border transactions"
 # -- H1/H2/H6/H7/H8's cross-border variants, skips baseline and event-based):
