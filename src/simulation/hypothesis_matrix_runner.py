@@ -67,6 +67,7 @@ before retrying.)
 """
 
 import random
+import traceback
 import warnings
 from pathlib import Path
 from typing import Callable
@@ -756,6 +757,11 @@ def run_hypothesis_matrix(
                 except Exception as exc:  # noqa: BLE001 -- deliberately broad: one cell/seed/
                     # utility_type's failure must never abort the rest of the matrix (see
                     # run_matrix's identical philosophy).
+                    print(
+                        f"[CELL FAILED] cell={spec.key} seed={seed} utility={utility_type}: {exc!r}",
+                        flush=True,
+                    )
+                    traceback.print_exc()
                     session.rollback()
                     failures.append((spec.key, seed, utility_type, exc))
                     continue
