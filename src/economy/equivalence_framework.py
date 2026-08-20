@@ -15,7 +15,7 @@ import httpx
 
 from src.agents.population import CARA_ELIGIBLE_ROLES, RISK_AVERSION_COHORTS
 from src.economy.hypothesis_scenarios import HYPOTHESIS_CHAIN_PINS
-from src.llm.llm_router import call_model_for_switch
+from src.llm.llm_router import ModelCallFailedError, call_model_for_switch
 from src.llm.switch_elicitation import render_switch_prompt
 from src.simulation.environment import Environment
 
@@ -156,9 +156,20 @@ def cohort_indifference_points(
         if agent.profile_name not in CARA_ELIGIBLE_ROLES:
             continue
         cohort = min(RISK_AVERSION_COHORTS, key=lambda c: abs(c - agent.risk_aversion))
-        indifference_point = _agent_indifference_point(
-            agent, comparison, fixed_traits, varied_other_traits, client
-        )
+        try:
+            indifference_point = _agent_indifference_point(
+                agent, comparison, fixed_traits, varied_other_traits, client
+            )
+        except ModelCallFailedError:
+            # A technical failure specific to this agent's assigned model (e.g. a
+            # model that doesn't support the response_format this codebase always
+            # requests) must not discard every other agent's already-elicited
+            # indifference point -- exclude just this agent from its cohort's
+            # average, mirroring holdings_by_cohort's identical bankrupt-agent
+            # exclusion. AuthenticationError is deliberately not caught here: a bad
+            # API key affects every agent equally and should abort loudly rather
+            # than silently emptying every cohort one agent at a time.
+            continue
         compensation = indifference_point - fixed_value
         cohort_sums[cohort] += compensation
         cohort_counts[cohort] += 1
