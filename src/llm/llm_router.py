@@ -233,8 +233,14 @@ def call_model(
     for attempt in range(retry_config.max_retries):
         try:
             response = _post_chat_completion(client, model_id, messages)
-        except httpx.TimeoutException as exc:
-            last_error = f"timeout: {exc}"
+        except httpx.TransportError as exc:
+            # Catches TimeoutException and every other transient transport-level
+            # failure (RemoteProtocolError, ConnectError, ReadError, ...) --
+            # narrowing this to TimeoutException alone let a plain dropped/reset
+            # connection propagate uncaught straight through the whole day-loop
+            # and abort an entire hypothesis cell on the first such blip, with no
+            # retry at all, unlike every other technical failure category here.
+            last_error = f"transport error: {exc}"
             retry_config.sleep_fn(retry_config.backoff_base_seconds * (2**attempt))
             continue
 
@@ -301,8 +307,14 @@ def call_model_for_switch(
     for attempt in range(retry_config.max_retries):
         try:
             response = _post_chat_completion(client, model_id, messages)
-        except httpx.TimeoutException as exc:
-            last_error = f"timeout: {exc}"
+        except httpx.TransportError as exc:
+            # Catches TimeoutException and every other transient transport-level
+            # failure (RemoteProtocolError, ConnectError, ReadError, ...) --
+            # narrowing this to TimeoutException alone let a plain dropped/reset
+            # connection propagate uncaught straight through the whole day-loop
+            # and abort an entire hypothesis cell on the first such blip, with no
+            # retry at all, unlike every other technical failure category here.
+            last_error = f"transport error: {exc}"
             retry_config.sleep_fn(retry_config.backoff_base_seconds * (2**attempt))
             continue
 
